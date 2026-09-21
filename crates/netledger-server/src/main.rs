@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use tracing::info;
 
 #[tokio::main]
@@ -9,8 +9,8 @@ async fn main() {
                 .unwrap_or_else(|_| "netledger_server=info".into()),
         )
         .init();
-    
-    let app= Router::new().route("/health", get(health));
+
+    let app = Router::new().route("/health", get(health));
 
     let addr = "127.0.0.1:8080";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
