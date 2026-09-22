@@ -1,12 +1,15 @@
 [package]
-name = "netledger-server" 
+name = "netledger-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 axum.workspace = true
+dotenvy.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
