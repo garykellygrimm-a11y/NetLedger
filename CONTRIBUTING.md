@@ -150,6 +150,25 @@ Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file 
 
 Significant design decisions are recorded in [docs/adr/](docs/adr/).
 
+## Releases
+
+Releases are automated with [Knope](https://knope.tech/), based on the Conventional Commits described in [Commit messages](#commit-messages). Knope is configured in `knope.toml`. `feat` and `fix` commits trigger a release; other commit types, such as `docs`, `ci`, and `chore`, do not. Changeset files, described below, can also trigger one.
+
+On every push to `main`, the `prepare-release` workflow runs Knope. If there are releasable changes since the last release, Knope bumps the version in `Cargo.toml` and `Cargo.lock`, updates `CHANGELOG.md`, force-pushes the result to the `chore/release` branch, and opens or updates a pull request from that branch to `main` titled `chore: release <version>`. If there is nothing to release, the workflow exits without opening a pull request. A maintainer can also run the workflow manually and set `override_version` to force a specific version.
+
+Merging the release pull request runs the `release` workflow. It tags the release as `v<version>`, creates a GitHub release that uses the version's `CHANGELOG.md` section as its notes, and uploads statically linked `netledger-server` builds for x64 Linux (musl) and x64 Windows:
+
+- `netledger-server-linux-x64.tar.gz`
+- `netledger-server-windows-x64.zip`
+
+Each archive has a matching `.sha256` file containing its SHA-256 checksum.
+
+When a change needs a release note or a version bump that its commit messages do not express, create a changeset with Knope and commit the file it writes to `.changeset/` along with the change:
+
+```powershell
+knope document-change
+```
+
 ## Reporting security issues
 
 Do not report vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).

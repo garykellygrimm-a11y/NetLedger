@@ -1,0 +1,66 @@
+name: prepare-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      override_version:
+        description: "Optional: force the next version, e.g. 0.1.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-release:
+    if: "!contains(github.event.head_commit.message, 'chore: prepare release')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Install Knope
+        env:
+          KNOPE_VERSION: "0.23.0"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          curl -fsSL -o "$workdir/knope.tgz" \
+            "https://github.com/knope-dev/knope/releases/download/knope/v${KNOPE_VERSION}/knope-x86_64-unknown-linux-musl.tgz"
+          tar -xzf "$workdir/knope.tgz" -C "$workdir"
+          bin="$(find "$workdir" -type f -name knope | head -1)"
+          [ -n "$bin" ] || { echo "knope binary not found in archive" >&2; exit 1; }
+          chmod +x "$bin"
+          sudo mv "$bin" /usr/local/bin/knope
+          rm -rf "$workdir"
+          knope --version
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare the release PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          OVERRIDE_VERSION: ${{ inputs.override_version }}
+        run: |
+          set +e
+          if [ -n "$OVERRIDE_VERSION" ]; then
+            output=$(knope prepare-release --verbose --override-version "$OVERRIDE_VERSION" 2>&1)
+          else
+            output=$(knope prepare-release --verbose 2>&1)
+          fi
+          status=$?
+          echo "$output"
+          if [ $status -ne 0 ]; then
+            if echo "$output" | grep -q "no_release"; then
+              echo "::notice::No releasable changes; nothing to prepare."
+              exit 0
+            fi
+            exit $status
+          fi

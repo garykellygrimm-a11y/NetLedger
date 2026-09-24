@@ -177,9 +177,7 @@ fn map_delete_error(err: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db_err) = &err
         && db_err.constraint() == Some("subnet_parent_id_fkey")
     {
-        return AppError::Conflict(
-            "subnet has child subnets; delete or reassign them first".to_string(),
-        );
+        return AppError::Conflict("subnet has child subnets; delete them first".to_string());
     }
 
     AppError::Database(err)

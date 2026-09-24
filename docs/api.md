@@ -107,7 +107,7 @@ Validation messages returned in `error`:
 
 ### `DELETE /subnets/{id}`
 
-Deletes one subnet. A subnet that is the parent of other subnets cannot be deleted; delete its child subnets or reassign them to another parent first. Deletion does not cascade.
+Deletes one subnet. A subnet that is the parent of other subnets cannot be deleted; delete its child subnets first. Deletion does not cascade.
 
 - `204 No Content` with no response body
 - `404 Not Found` if no subnet has that ID
@@ -119,7 +119,7 @@ Error messages returned in `error`:
 | Condition | `error` |
 | --- | --- |
 | No subnet has that ID | `not found` |
-| The subnet has child subnets | `subnet has child subnets; delete or reassign them first` |
+| The subnet has child subnets | `subnet has child subnets; delete them first` |
 
 ## Errors
 
