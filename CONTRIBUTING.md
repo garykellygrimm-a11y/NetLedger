@@ -8,6 +8,7 @@ This document covers setting up a development environment and how changes are pr
 
 - Rust 1.94 or newer (the `rust-version` in `Cargo.toml`)
 - PostgreSQL 14 or newer. Development uses PostgreSQL 18.
+- Node.js 24 LTS, or at least 22.12, needed only to work on the web front end in `web/`
 - sqlx-cli, needed only to create migrations or change SQL queries:
 
 ```powershell
@@ -59,6 +60,18 @@ cargo run -p netledger-server
 ```
 
 The server applies any pending migrations on startup, so no separate migration step is needed.
+
+### Web front end
+
+The React and TypeScript front end in `web/` is built with Vite 8. Start the server first, then install dependencies once and start the Vite development server from `web/`:
+
+```powershell
+cd web
+npm install
+npm run dev
+```
+
+Vite serves the UI at `http://localhost:5173` and proxies requests under `/api` to the server at `http://127.0.0.1:8080`. The proxy target is set in `web/vite.config.ts` and does not follow `NETLEDGER_BIND_ADDR`, so if you run the server on a different address, change the proxy target locally.
 
 ### Migrations
 
@@ -137,6 +150,13 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --workspace --locked
 cargo test --workspace --locked
+```
+
+If you changed `web/`, also lint, type-check, and build the front end from `web/`. CI does not run these checks yet:
+
+```powershell
+npm run lint
+npm run build
 ```
 
 Then confirm:
