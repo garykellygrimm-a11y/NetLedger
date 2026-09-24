@@ -23,6 +23,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 - [docs/api.md](docs/api.md): HTTP endpoints and error format
 - [docs/adr/](docs/adr/): architecture decision records
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities
+- [CHANGELOG.md](CHANGELOG.md): changes in each release
 
 ## Project layout
 
