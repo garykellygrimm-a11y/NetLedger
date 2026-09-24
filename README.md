@@ -1,10 +1,10 @@
 # NetLedger
 
-NetLedger is an IP address management (IPAM) tool for tracking subnets and address allocations. It is designed to run anywhere from a single Windows workstation to an enterprise or air-gapped datacenter, from one codebase configured through environment variables. The backend is a Rust web server built on Axum, backed by PostgreSQL through SQLx. A React and TypeScript front end is planned.
+NetLedger is an IP address management (IPAM) tool for tracking subnets and address allocations. It is designed to run anywhere from a single Windows workstation to an enterprise or air-gapped datacenter, from one codebase configured through environment variables. The backend is a Rust web server built on Axum, backed by PostgreSQL through SQLx. The front end, in early development, uses React and TypeScript.
 
 ## Status
 
-NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, and delete subnets. There is no authentication yet.
+NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, and delete subnets. The web UI lists subnets and cannot yet change them. There is no authentication yet.
 
 ## Quick start
 
@@ -28,6 +28,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 ## Project layout
 
 - `crates/netledger-server`: the Axum HTTP server
+- `web/`: the React and TypeScript front end, built with Vite
 - `migrations/`: SQL schema migrations, embedded in the server binary and applied on startup
 - `.sqlx/`: committed query metadata so the project builds without a database
 - `compose.yml`: optional local PostgreSQL container for development
@@ -40,6 +41,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 - Server with embedded migrations, liveness and readiness checks
 - Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, and `DELETE /api/subnets/{id}`
 - JSON error responses
+- Web UI: read-only subnet list
 - Automated API tests
 - CI with formatting, linting, build, and test checks; Dependabot; CodeQL
 
@@ -47,7 +49,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 
 - Individual IP address tracking and network discovery
 - Authentication
-- React and TypeScript front end
+- Web UI beyond the read-only subnet list
 - Installers and deployment guidance for Windows and RHEL
 
 ## License
