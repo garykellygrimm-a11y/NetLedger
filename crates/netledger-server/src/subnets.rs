@@ -75,7 +75,7 @@ impl CreateSubnet {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/subnets", get(list_subnets).post(create_subnet))
-        .route("/subnets/{id}", get(get_subnet))
+        .route("/subnets/{id}", get(get_subnet).delete(delete_subnet))
 }
 
 async fn list_subnets(State(state): State<AppState>) -> Result<Json<Vec<Subnet>>, AppError> {
@@ -139,6 +139,22 @@ async fn create_subnet(
     Ok((StatusCode::CREATED, Json(subnet)))
 }
 
+async fn delete_subnet(
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let result = sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
+        .execute(&state.db)
+        .await
+        .map_err(map_delete_error)?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn map_create_error(err: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db_err) = &err {
         match db_err.constraint() {
@@ -155,4 +171,238 @@ fn map_create_error(err: sqlx::Error) -> AppError {
     }
 
     AppError::Database(err)
+}
+
+fn map_delete_error(err: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db_err) = &err
+        && db_err.constraint() == Some("subnet_parent_id_fkey")
+    {
+        return AppError::Conflict(
+            "subnet has child subnets; delete or reassign them first".to_string(),
+        );
+    }
+
+    AppError::Database(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use tower::ServiceExt;
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder().method(method).uri(uri);
+        let body = match body {
+            Some(json) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
+
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
+
+        (status, value)
+    }
+
+    async fn create(app: &Router, body: Value) -> (StatusCode, Value) {
+        send(app, "POST", "/subnets", Some(body)).await
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn create_returns_201_and_the_new_subnet(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = create(
+            &app,
+            json!({ "cidr": "10.2.0.0/24", "name": "  Management  ", "vlan_id": 200 }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["cidr"], "10.2.0.0/24");
+        assert_eq!(body["name"], "Management");
+        assert_eq!(body["vlan_id"], 200);
+        assert_eq!(body["description"], "");
+        assert!(body["id"].is_string());
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn duplicate_cidr_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = json!({ "cidr": "10.2.0.0/24", "name": "First" });
+
+        create(&app, subnet.clone()).await;
+        let (status, body) = create(&app, subnet).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "a subnet with this cidr already exists");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn host_bits_return_400_with_the_network_address(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = create(&app, json!({ "cidr": "10.2.0.5/24", "name": "Bad" })).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("10.2.0.0/24"));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn out_of_range_vlan_returns_400(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, _) = create(
+            &app,
+            json!({ "cidr": "10.3.0.0/24", "name": "Bad VLAN", "vlan_id": 5000 }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn blank_name_returns_400(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = create(&app, json!({ "cidr": "10.5.0.0/24", "name": "   " })).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "name must not be empty");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn unknown_field_returns_422(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = create(
+            &app,
+            json!({ "cidr": "10.4.0.0/24", "name": "Typo", "vlan": 200 }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"].as_str().unwrap().contains("vlan"));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn nonexistent_parent_returns_400(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, _) = create(
+            &app,
+            json!({
+                "cidr": "10.6.0.0/24",
+                "name": "Orphan",
+                "parent_id": "00000000-0000-0000-0000-000000000000"
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn list_is_ordered_by_network_address(pool: PgPool) {
+        let app = crate::app(pool);
+        for cidr in ["192.168.1.0/24", "10.0.0.0/8", "9.0.0.0/8"] {
+            create(&app, json!({ "cidr": cidr, "name": cidr })).await;
+        }
+
+        let (status, body) = send(&app, "GET", "/subnets", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let cidrs: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|subnet| subnet["cidr"].as_str().unwrap())
+            .collect();
+        assert_eq!(cidrs, ["9.0.0.0/8", "10.0.0.0/8", "192.168.1.0/24"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn get_unknown_subnet_returns_404(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = send(
+            &app,
+            "GET",
+            "/subnets/00000000-0000-0000-0000-000000000000",
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "not found");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn invalid_id_returns_400_as_json(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = send(&app, "GET", "/subnets/not-a-uuid", None).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].is_string());
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn delete_returns_204_then_the_subnet_is_gone(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(&app, json!({ "cidr": "10.7.0.0/24", "name": "Temp" })).await;
+        let uri = format!("/subnets/{}", created["id"].as_str().unwrap());
+
+        let (status, body) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(body, Value::Null);
+
+        let (status, _) = send(&app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn deleting_a_parent_with_children_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
+        let parent_id = parent["id"].as_str().unwrap();
+        create(
+            &app,
+            json!({ "cidr": "10.0.1.0/24", "name": "Child", "parent_id": parent_id }),
+        )
+        .await;
+
+        let (status, body) = send(&app, "DELETE", &format!("/subnets/{parent_id}"), None).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("child subnets"));
+    }
 }
