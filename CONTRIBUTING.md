@@ -126,7 +126,7 @@ Then confirm:
 
 ### Documentation
 
-Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file must also update `README.md`, `CONTRIBUTING.md`, or a file under `docs/`. The `docs-check` workflow enforces this. For changes with no user-facing effect, such as formatting or internal refactors, apply the `no-docs-needed` label instead.
+Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file must also update `README.md` or a file under `docs/`. The `docs-check` workflow enforces this; changes to `CONTRIBUTING.md` alone don't satisfy it. For changes with no user-facing effect, such as formatting or internal refactors, apply the `no-docs-needed` label instead.
 
 Significant design decisions are recorded in [docs/adr/](docs/adr/).
 

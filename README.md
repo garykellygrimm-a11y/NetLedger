@@ -4,7 +4,7 @@ NetLedger is an IP address management (IPAM) tool for tracking subnets and addre
 
 ## Status
 
-NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides read-only subnet endpoints. There is no authentication yet.
+NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, and create subnets. There is no authentication yet.
 
 ## Quick start
 
@@ -19,8 +19,8 @@ curl.exe http://127.0.0.1:8080/health/ready
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): development setup, workflow, and pull request requirements
-- [docs/Configuration.md](docs/configuration.md): environment variables
-- [docs/API.md](docs/api.md): HTTP endpoints
+- [docs/configuration.md](docs/configuration.md): environment variables
+- [docs/api.md](docs/api.md): HTTP endpoints and error format
 - [docs/adr/](docs/adr/): architecture decision records
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities
 
@@ -34,15 +34,16 @@ curl.exe http://127.0.0.1:8080/health/ready
 
 ## Roadmap
 
-# Built:
+### Built
 
 - Server with embedded migrations, liveness and readiness checks
-- Read-only subnet API: `GET /subnets` and `GET /subnets/{id}`
+- Subnet API: `GET /subnets`, `GET /subnets/{id}`, and `POST /subnets` with validation
+- JSON error responses
 - CI with formatting, linting, build, and test checks; Dependabot; CodeQL
 
-# Planned:
+### Planned
 
-- Creating and deleting subnets, with validation
+- Deleting subnets
 - Individual IP address tracking and network discovery
 - Authentication
 - React and TypeScript front end
