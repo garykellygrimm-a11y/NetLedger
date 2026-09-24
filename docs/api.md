@@ -1,6 +1,6 @@
 # HTTP API
 
-All endpoints are unauthenticated in the current version, including `POST /subnets`, which writes to the database. Anyone who can reach the server can create subnets. Requests and responses use JSON unless noted.
+All endpoints are unauthenticated in the current version, including `POST /subnets` and `DELETE /subnets/{id}`, which write to the database. Anyone who can reach the server can create and delete subnets. Requests and responses use JSON unless noted.
 
 ## Health
 
@@ -104,6 +104,22 @@ Validation messages returned in `error`:
 | `vlan_id` is out of range | `vlan_id must be between 1 and 4094` |
 | `parent_id` does not exist | `parent_id does not refer to an existing subnet` |
 | `cidr` already exists | `a subnet with this cidr already exists` |
+
+### `DELETE /subnets/{id}`
+
+Deletes one subnet. A subnet that is the parent of other subnets cannot be deleted; delete its child subnets or reassign them to another parent first. Deletion does not cascade.
+
+- `204 No Content` with no response body
+- `404 Not Found` if no subnet has that ID
+- `409 Conflict` if the subnet has child subnets
+- `400 Bad Request` if `id` is not a valid UUID
+
+Error messages returned in `error`:
+
+| Condition | `error` |
+| --- | --- |
+| No subnet has that ID | `not found` |
+| The subnet has child subnets | `subnet has child subnets; delete or reassign them first` |
 
 ## Errors
 
