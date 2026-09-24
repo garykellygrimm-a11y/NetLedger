@@ -72,7 +72,7 @@ Every migration needs both an `.up.sql` and a `.down.sql` file. Never edit a mig
 
 ### SQL queries and the offline cache
 
-Queries written with `query!` and `query_as!` are checked against the database at compile time. CI has no database, so it builds from the query metadata committed in `.sqlx/`.
+Queries written with `query!` and `query_as!` are checked against the database at compile time. CI builds with `SQLX_OFFLINE` set to `true`, so it compiles from the query metadata committed in `.sqlx/` instead of connecting to a database.
 
 After adding or changing any checked query, or changing the schema a query depends on, regenerate the cache against a migrated database and commit it:
 
@@ -81,6 +81,26 @@ cargo sqlx prepare --workspace -- --all-targets
 ```
 
 The `-- --all-targets` flag includes queries in tests. Without it, CI fails to compile tests that use checked queries.
+
+### Testing
+
+Tests use `#[sqlx::test]`, which creates an isolated database for each test. For that, `DATABASE_URL` must point at a role that has the `CREATEDB` privilege.
+
+For local development, grant the privilege by running the following as the `postgres` superuser:
+
+```sql
+ALTER ROLE netledger CREATEDB;
+```
+
+> **Warning:** Grant `CREATEDB` for development only. A production application role must never have `CREATEDB`.
+
+Run the tests:
+
+```powershell
+cargo test --workspace
+```
+
+CI runs the tests against a PostgreSQL 18 service container.
 
 ## Workflow
 

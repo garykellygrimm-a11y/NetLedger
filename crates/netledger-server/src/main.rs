@@ -7,14 +7,24 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::{Router, extract::State, http::StatusCode, routing::get};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
 use tracing::{error, info};
 
 use crate::config::Config;
 
+static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
+
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
+}
+
+fn app(db: PgPool) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/health/ready", get(ready))
+        .merge(subnets::router())
+        .with_state(AppState { db })
 }
 
 #[tokio::main]
@@ -37,23 +47,19 @@ async fn main() -> Result<()> {
         .await
         .context("failed to connect to the database")?;
 
-    sqlx::migrate!("../../migrations")
+    MIGRATOR
         .run(&db)
         .await
         .context("failed to run database migrations")?;
     info!("database migrations are up to date");
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/health/ready", get(ready))
-        .merge(subnets::router())
-        .with_state(AppState { db });
+    let router = app(db);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .with_context(|| format!("failed to bind {}", config.bind_addr))?;
     info!("listening on {}", config.bind_addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, router).await?;
 
     Ok(())
 }
