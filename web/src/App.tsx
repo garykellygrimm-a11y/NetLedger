@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ApiError, listSubnets } from './api.ts'
+import { SubnetForm } from './SubnetForm.tsx'
 import { SubnetTable } from './SubnetTable.tsx'
 import type { Subnet } from './types.ts'
 
@@ -10,6 +11,7 @@ type LoadState =
 
 function App() {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
+  const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -26,7 +28,9 @@ function App() {
       })
 
     return () => controller.abort()
-  }, [])
+  }, [refreshKey])
+
+  const subnets = state.status === 'loaded' ? state.subnets : []
 
   return (
     <main>
@@ -34,6 +38,8 @@ function App() {
         <h1>NetLedger</h1>
         <p className="subtitle">IP address management</p>
       </header>
+
+      <SubnetForm subnets={subnets} onCreated={() => setRefreshKey((key) => key + 1)} />
 
       <section aria-labelledby="subnets-heading">
         <h2 id="subnets-heading">Subnets</h2>

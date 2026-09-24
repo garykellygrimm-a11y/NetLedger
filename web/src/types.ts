@@ -8,3 +8,11 @@ export type Subnet = {
     created_at: string
     updated_at: string
 }
+
+export type CreateSubnetInput = {
+    cidr: string
+    name: string
+    description: string
+    vlan_id: number | null
+    parent_id: string | null
+}

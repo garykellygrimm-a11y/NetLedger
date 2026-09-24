@@ -5,6 +5,9 @@
   --muted: #666666;
   --border: #d9d9d9;
   --row-alt: #f6f6f6;
+  --panel: #fafafa;
+  --accent: #1f5fbf;
+  --accent-fg: #ffffff;
   --error: #b3261e;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -17,6 +20,9 @@
     --muted: #a0a0a0;
     --border: #333333;
     --row-alt: #1f1f1f;
+    --panel: #1c1c1c;
+    --accent: #7aa7ff;
+    --accent-fg: #0b1a33;
     --error: #f2b8b5;
   }
 }
@@ -40,6 +46,64 @@ h1 {
 .subtitle {
   margin: 0 0 2rem;
   color: var(--muted);
+}
+
+.subnet-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2.5rem;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.subnet-form h2 {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+label {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+input,
+select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+button {
+  padding: 0.5rem 1.1rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 
 table {
@@ -67,5 +131,6 @@ tbody tr:nth-child(even) {
 }
 
 .error {
+  margin: 0;
   color: var(--error);
 }
