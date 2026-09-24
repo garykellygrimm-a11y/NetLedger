@@ -1,0 +1,137 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SQLX_OFFLINE: "true"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.check.outputs.needed }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Does the current version need releasing?
+        id: check
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          [ -n "$version" ] || { echo "could not read the version from Cargo.toml" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "v${version} is already tagged; nothing to release."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          elif ! grep -q "^## ${version} " CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for ${version}; waiting for a release PR."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v${version} has no tag and a changelog section; releasing."
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: netledger-server
+            archive: netledger-server-linux-x64.tar.gz
+            rustflags: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: netledger-server.exe
+            archive: netledger-server-windows-x64.zip
+            rustflags: "-C target-feature=+crt-static"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: ${{ matrix.target }}
+          rustflags: ${{ matrix.rustflags }}
+
+      - name: Build
+        run: cargo build --release --locked -p netledger-server --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary }}" -DestinationPath "${{ matrix.archive }}"
+          (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.archive }}" | Out-File -Encoding ascii "${{ matrix.archive }}.sha256"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar -czf "${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" "${{ matrix.binary }}"
+          sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.os }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Show what will be uploaded
+        run: ls -la artifacts
+
+      - name: Install Knope
+        env:
+          KNOPE_VERSION: "0.23.0"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          curl -fsSL -o "$workdir/knope.tgz" \
+            "https://github.com/knope-dev/knope/releases/download/knope/v${KNOPE_VERSION}/knope-x86_64-unknown-linux-musl.tgz"
+          tar -xzf "$workdir/knope.tgz" -C "$workdir"
+          bin="$(find "$workdir" -type f -name knope | head -1)"
+          [ -n "$bin" ] || { echo "knope binary not found in archive" >&2; exit 1; }
+          chmod +x "$bin"
+          sudo mv "$bin" /usr/local/bin/knope
+          rm -rf "$workdir"
+          knope --version
+
+      - name: Create the release
+        run: knope release --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
