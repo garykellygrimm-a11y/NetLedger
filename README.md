@@ -19,8 +19,8 @@ curl.exe http://127.0.0.1:8080/health/ready
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): development setup, workflow, and pull request requirements
-- [docs/configuration.md](docs/configuration.md): environment variables
-- [docs/api.md](docs/api.md): HTTP endpoints
+- [docs/Configuration.md](docs/configuration.md): environment variables
+- [docs/API.md](docs/api.md): HTTP endpoints
 - [docs/adr/](docs/adr/): architecture decision records
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities
 
@@ -34,13 +34,13 @@ curl.exe http://127.0.0.1:8080/health/ready
 
 ## Roadmap
 
-Built:
+# Built:
 
 - Server with embedded migrations, liveness and readiness checks
 - Read-only subnet API: `GET /subnets` and `GET /subnets/{id}`
 - CI with formatting, linting, build, and test checks; Dependabot; CodeQL
 
-Planned:
+# Planned:
 
 - Creating and deleting subnets, with validation
 - Individual IP address tracking and network discovery
