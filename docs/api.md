@@ -1,6 +1,6 @@
 # HTTP API
 
-All endpoints are unauthenticated in the current version, including `POST /subnets` and `DELETE /subnets/{id}`, which write to the database. Anyone who can reach the server can create and delete subnets. Requests and responses use JSON unless noted.
+All endpoints are unauthenticated in the current version, including `POST /api/subnets` and `DELETE /api/subnets/{id}`, which write to the database. Anyone who can reach the server can create and delete subnets. Requests and responses use JSON unless noted.
 
 ## Health
 
@@ -47,13 +47,13 @@ Monitoring should restart the process only when `/health` fails. When only `/hea
 | `created_at` | string | RFC 3339 timestamp, UTC |
 | `updated_at` | string | RFC 3339 timestamp, UTC |
 
-### `GET /subnets`
+### `GET /api/subnets`
 
 Lists all subnets, ordered by network address. There is no pagination or filtering yet.
 
 - `200 OK` with an array of subnet objects
 
-### `GET /subnets/{id}`
+### `GET /api/subnets/{id}`
 
 Returns one subnet.
 
@@ -61,7 +61,7 @@ Returns one subnet.
 - `404 Not Found` if no subnet has that ID
 - `400 Bad Request` if `id` is not a valid UUID
 
-### `POST /subnets`
+### `POST /api/subnets`
 
 Creates a subnet. The request body must be a JSON object sent with `Content-Type: application/json`.
 
@@ -105,7 +105,7 @@ Validation messages returned in `error`:
 | `parent_id` does not exist | `parent_id does not refer to an existing subnet` |
 | `cidr` already exists | `a subnet with this cidr already exists` |
 
-### `DELETE /subnets/{id}`
+### `DELETE /api/subnets/{id}`
 
 Deletes one subnet. A subnet that is the parent of other subnets cannot be deleted; delete its child subnets first. Deletion does not cascade.
 
