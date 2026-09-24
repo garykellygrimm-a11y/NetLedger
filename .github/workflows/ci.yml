@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SQLX_OFFLINE: "true"
+
 jobs:
   rust:
     name: rust
