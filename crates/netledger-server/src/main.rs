@@ -23,7 +23,7 @@ fn app(db: PgPool) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
-        .merge(subnets::router())
+        .nest("/api", subnets::router())
         .with_state(AppState { db })
 }
 

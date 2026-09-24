@@ -38,7 +38,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 ### Built
 
 - Server with embedded migrations, liveness and readiness checks
-- Subnet API: `GET /subnets`, `GET /subnets/{id}`, `POST /subnets` with validation, and `DELETE /subnets/{id}`
+- Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, and `DELETE /api/subnets/{id}`
 - JSON error responses
 - Automated API tests
 - CI with formatting, linting, build, and test checks; Dependabot; CodeQL

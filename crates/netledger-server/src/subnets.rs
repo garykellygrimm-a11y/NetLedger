@@ -228,7 +228,7 @@ mod tests {
     }
 
     async fn create(app: &Router, body: Value) -> (StatusCode, Value) {
-        send(app, "POST", "/subnets", Some(body)).await
+        send(app, "POST", "/api/subnets", Some(body)).await
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
@@ -332,7 +332,7 @@ mod tests {
             create(&app, json!({ "cidr": cidr, "name": cidr })).await;
         }
 
-        let (status, body) = send(&app, "GET", "/subnets", None).await;
+        let (status, body) = send(&app, "GET", "/api/subnets", None).await;
 
         assert_eq!(status, StatusCode::OK);
         let cidrs: Vec<&str> = body
@@ -351,7 +351,7 @@ mod tests {
         let (status, body) = send(
             &app,
             "GET",
-            "/subnets/00000000-0000-0000-0000-000000000000",
+            "/api/subnets/00000000-0000-0000-0000-000000000000",
             None,
         )
         .await;
@@ -364,7 +364,7 @@ mod tests {
     async fn invalid_id_returns_400_as_json(pool: PgPool) {
         let app = crate::app(pool);
 
-        let (status, body) = send(&app, "GET", "/subnets/not-a-uuid", None).await;
+        let (status, body) = send(&app, "GET", "/api/subnets/not-a-uuid", None).await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["error"].is_string());
@@ -374,7 +374,7 @@ mod tests {
     async fn delete_returns_204_then_the_subnet_is_gone(pool: PgPool) {
         let app = crate::app(pool);
         let (_, created) = create(&app, json!({ "cidr": "10.7.0.0/24", "name": "Temp" })).await;
-        let uri = format!("/subnets/{}", created["id"].as_str().unwrap());
+        let uri = format!("/api/subnets/{}", created["id"].as_str().unwrap());
 
         let (status, body) = send(&app, "DELETE", &uri, None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -398,7 +398,7 @@ mod tests {
         )
         .await;
 
-        let (status, body) = send(&app, "DELETE", &format!("/subnets/{parent_id}"), None).await;
+        let (status, body) = send(&app, "DELETE", &format!("/api/subnets/{parent_id}"), None).await;
 
         assert_eq!(status, StatusCode::CONFLICT);
         assert!(body["error"].as_str().unwrap().contains("child subnets"));
