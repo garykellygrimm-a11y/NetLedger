@@ -1,4 +1,6 @@
 mod config;
+mod error;
+mod subnets;
 
 use std::time::Duration;
 
@@ -43,6 +45,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
+        .merge(subnets::router())
         .with_state(AppState { db });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
