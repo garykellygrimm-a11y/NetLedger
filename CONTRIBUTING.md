@@ -73,6 +73,8 @@ npm run dev
 
 Vite serves the UI at `http://localhost:5173` and proxies requests under `/api` to the server at `http://127.0.0.1:8080`. The proxy target is set in `web/vite.config.ts` and does not follow `NETLEDGER_BIND_ADDR`, so if you run the server on a different address, change the proxy target locally.
 
+Browser-side validation in the web UI's forms, such as required fields and length or range limits on inputs, is a convenience only. The API is the source of truth for validation: put validation rules in the API, not only in the front end, and do not rely on client-side checks to protect the data. The API's validation rules are listed in [docs/api.md](docs/api.md).
+
 ### Migrations
 
 Create a reversible migration from the repository root:

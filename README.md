@@ -4,7 +4,7 @@ NetLedger is an IP address management (IPAM) tool for tracking subnets and addre
 
 ## Status
 
-NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, and delete subnets. The web UI lists subnets and cannot yet change them. There is no authentication yet.
+NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, and delete subnets. The web UI lists subnets and has a form to create them. When the API rejects a subnet, the form shows the API's error message. After a subnet is created, the list refreshes to show it. It cannot yet edit or delete subnets. There is no authentication yet.
 
 ## Quick start
 
@@ -41,7 +41,8 @@ curl.exe http://127.0.0.1:8080/health/ready
 - Server with embedded migrations, liveness and readiness checks
 - Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, and `DELETE /api/subnets/{id}`
 - JSON error responses
-- Web UI: read-only subnet list
+- Web UI: subnet list
+- Create subnets from the web UI
 - Automated API tests
 - CI with formatting, linting, build, and test checks; Dependabot; CodeQL
 
@@ -49,7 +50,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 
 - Individual IP address tracking and network discovery
 - Authentication
-- Web UI beyond the read-only subnet list
+- Web UI beyond listing and creating subnets, such as editing and deleting them
 - Installers and deployment guidance for Windows and RHEL
 
 ## License
