@@ -68,6 +68,22 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the web front end
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Confirm the front end will be embedded
+        shell: bash
+        run: test -f web/dist/index.html || { echo "web/dist/index.html is missing" >&2; exit 1; }
+
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: ${{ matrix.target }}

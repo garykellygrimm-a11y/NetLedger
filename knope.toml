@@ -2,6 +2,8 @@
 versioned_files = [
     "Cargo.toml",
     { path = "Cargo.lock", dependency = "netledger-server" },
+    "web/package.json",
+    "web/package-lock.json",
 ]
 changelog = "CHANGELOG.md"
 assets = "artifacts/*"

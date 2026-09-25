@@ -32,9 +32,9 @@ postgres://netledger:PASSWORD@db.example.internal:5432/netledger?sslmode=verify-
 
 ### `NETLEDGER_BIND_ADDR`
 
-An IP address and port, such as `127.0.0.1:8080` or `0.0.0.0:8080`. The default listens only on the loopback interface, so the server is unreachable from other machines. An invalid value stops the server at startup with `NETLEDGER_BIND_ADDR must be an address and port, like 127.0.0.1:8080`.
+An IP address and port, such as `127.0.0.1:8080` or `0.0.0.0:8080`. The server serves both the API and the web UI at this address. The default listens only on the loopback interface, so the server is unreachable from other machines. An invalid value stops the server at startup with `NETLEDGER_BIND_ADDR must be an address and port, like 127.0.0.1:8080`.
 
-NetLedger has no authentication yet, and its API can create subnets (see [api.md](api.md)). Do not bind it to a non-loopback address on an untrusted network.
+NetLedger has no authentication yet, and its API can create and delete subnets (see [api.md](api.md)). Do not bind it to a non-loopback address on an untrusted network.
 
 ### `RUST_LOG`
 

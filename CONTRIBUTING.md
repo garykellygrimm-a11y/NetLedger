@@ -8,7 +8,7 @@ This document covers setting up a development environment and how changes are pr
 
 - Rust 1.94 or newer (the `rust-version` in `Cargo.toml`)
 - PostgreSQL 14 or newer. Development uses PostgreSQL 18.
-- Node.js 24 LTS, or at least 22.12, needed only to work on the web front end in `web/`
+- Node.js 24 LTS, or at least 22.12, needed only to work on the web front end in `web/` or to build it for the server to serve
 - sqlx-cli, needed only to create migrations or change SQL queries:
 
 ```powershell
@@ -63,7 +63,24 @@ The server applies any pending migrations on startup, so no separate migration s
 
 ### Web front end
 
-The React and TypeScript front end in `web/` is built with Vite 8. Start the server first, then install dependencies once and start the Vite development server from `web/`:
+The React and TypeScript front end in `web/` is built with Vite 8 into `web/dist`, which is not committed. The server serves the files in `web/dist` at its bind address, using the `rust-embed` crate. How it finds them depends on the build profile:
+
+- Debug builds, such as `cargo run`, read the files from `web/dist` on disk when they are requested.
+- Release builds, such as `cargo build --release`, embed the contents of `web/dist` in the binary at compile time. Build the front end before building the server in release mode.
+
+The server compiles without `web/dist`. A build without it serves the API normally, but page requests return a `404` message saying the front end is not included. See [docs/api.md](docs/api.md#web-ui) for how the server routes web UI requests.
+
+To test the UI as the server serves it, install dependencies once, build the front end, and run the server from the repository root:
+
+```powershell
+npm --prefix web install
+npm --prefix web run build
+cargo run -p netledger-server
+```
+
+Then open `http://127.0.0.1:8080`, or the address set in `NETLEDGER_BIND_ADDR`.
+
+For development with live reloading, use the Vite development server instead. Start the server first, then install dependencies once and start the Vite development server from `web/`:
 
 ```powershell
 cd web
@@ -182,7 +199,7 @@ Dependabot, configured in `.github/dependabot.yml`, checks weekly for updates to
 
 Releases are automated with [Knope](https://knope.tech/), based on the Conventional Commits described in [Commit messages](#commit-messages). Knope is configured in `knope.toml`. `feat` and `fix` commits trigger a release; other commit types, such as `docs`, `ci`, and `chore`, do not. Changeset files, described below, can also trigger one.
 
-On every push to `main`, the `prepare-release` workflow runs Knope. If there are releasable changes since the last release, Knope bumps the version in `Cargo.toml` and `Cargo.lock`, updates `CHANGELOG.md`, force-pushes the result to the `chore/release` branch, and opens or updates a pull request from that branch to `main` titled `chore: release <version>`. If there is nothing to release, the workflow exits without opening a pull request. A maintainer can also run the workflow manually and set `override_version` to force a specific version.
+On every push to `main`, the `prepare-release` workflow runs Knope. If there are releasable changes since the last release, Knope bumps the version in `Cargo.toml`, `Cargo.lock`, `web/package.json`, and `web/package-lock.json`, so the server and web UI share one version, updates `CHANGELOG.md`, force-pushes the result to the `chore/release` branch, and opens or updates a pull request from that branch to `main` titled `chore: release <version>`. If there is nothing to release, the workflow exits without opening a pull request. A maintainer can also run the workflow manually and set `override_version` to force a specific version.
 
 Merging the release pull request runs the `release` workflow. It tags the release as `v<version>`, creates a GitHub release that uses the version's `CHANGELOG.md` section as its notes, and uploads statically linked `netledger-server` builds for x64 Linux (musl) and x64 Windows:
 
@@ -190,6 +207,8 @@ Merging the release pull request runs the `release` workflow. It tags the releas
 - `netledger-server-windows-x64.zip`
 
 Each archive has a matching `.sha256` file containing its SHA-256 checksum.
+
+Each binary includes the web UI. Before building the server, the `release` workflow builds the front end with `npm ci` and `npm run build` in `web/`, and it fails if `web/dist/index.html` is missing, so a release is never published without the UI.
 
 When a change needs a release note or a version bump that its commit messages do not express, create a changeset with Knope and commit the file it writes to `.changeset/` along with the change:
 

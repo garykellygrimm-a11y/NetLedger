@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod extractors;
 mod subnets;
+mod web;
 
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use axum::{Router, extract::State, http::StatusCode, routing::get};
 use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
 use tracing::{error, info};
 
-use crate::config::Config;
+use crate::{config::Config, error::AppError};
 
 static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
 
@@ -20,11 +21,14 @@ struct AppState {
 }
 
 fn app(db: PgPool) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
-        .nest("/api", subnets::router())
-        .with_state(AppState { db })
+        .nest("/api", subnets::router().fallback(api_not_found))
+        .fallback(web::serve)
+        .with_state(AppState { db });
+
+    web::with_security_headers(router)
 }
 
 #[tokio::main]
@@ -76,4 +80,8 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, &'static str) {
             (StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
         }
     }
+}
+
+async fn api_not_found() -> AppError {
+    AppError::NotFound
 }
