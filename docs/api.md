@@ -121,9 +121,38 @@ Error messages returned in `error`:
 | No subnet has that ID | `not found` |
 | The subnet has child subnets | `subnet has child subnets; delete them first` |
 
+## Web UI
+
+The server serves the web UI from the same address as the API. Requests to any path other than the health checks and paths under `/api` are handled as web UI requests. The handler does not check the request method. The leading `/` is removed from the path, and then:
+
+1. If the path names a file in the built front end, `web/dist`, the file is returned with a `Content-Type` based on its extension. Files under `assets/` are sent with `Cache-Control: public, max-age=31536000, immutable`, and all other files with `Cache-Control: no-cache`.
+2. Otherwise, if the path contains a period (`.`) anywhere, it is treated as a missing file and returns `404 Not Found` with an empty body.
+3. Otherwise, the path is treated as a page route and returns `index.html` with `200 OK`, so the web UI handles the route in the browser. `/` is handled this way.
+
+If the server was built without the front end, page routes return `404 Not Found` with a plain-text message explaining that the web front end is not included in the build. See [CONTRIBUTING.md](../CONTRIBUTING.md#web-front-end) for how builds include it.
+
+## Security headers
+
+Every response, including API, health check, and web UI responses, carries these headers. They replace any value a handler set.
+
+| Header | Value |
+| --- | --- |
+| `Content-Security-Policy` | See below |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Referrer-Policy` | `no-referrer` |
+
+The `Content-Security-Policy` value is:
+
+```text
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+```
+
+It limits scripts, styles, fonts, connections, and form submissions to the server's own origin. Images may also use `data:` URLs. Plugins are blocked, and no site, including NetLedger itself, may embed its pages in a frame.
+
 ## Errors
 
-All endpoints except the health checks return errors as a JSON object with a single `error` field:
+The health checks and the web UI return plain-text or empty error bodies, described above. Everything under `/api/`, including a request to a path that matches no endpoint, returns errors as a JSON object with a single `error` field:
 
 ```json
 { "error": "not found" }
@@ -132,7 +161,7 @@ All endpoints except the health checks return errors as a JSON object with a sin
 | Status | `error` | Meaning |
 | --- | --- | --- |
 | `400` | A description of the problem | A validation rule failed, the request body is not valid JSON, or a path parameter such as `{id}` could not be parsed |
-| `404` | `not found` | The requested resource does not exist |
+| `404` | `not found` | The requested resource does not exist, or no endpoint matches a path under `/api/` |
 | `409` | A description of the conflict | The request conflicts with existing data |
 | `415` | A description of the problem | The request body is not declared as JSON |
 | `422` | A description of the problem | The request body does not match the expected shape |

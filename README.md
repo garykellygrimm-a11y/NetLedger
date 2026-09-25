@@ -6,21 +6,36 @@ NetLedger is an IP address management (IPAM) tool for tracking subnets and addre
 
 NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, and delete subnets. The web UI lists subnets and has a form to create them. When the API rejects a subnet, the form shows the API's error message. After a subnet is created, the list refreshes to show it. Each row in the subnet list has a Delete button that asks for confirmation before deleting the subnet. A subnet that has child subnets cannot be deleted; in that case the UI shows the API's conflict message. The web UI cannot yet edit subnets. There is no authentication yet.
 
+The server serves both the API and the web UI at its bind address. Release builds embed the built web UI in the binary, so a release is a single file.
+
 ## Quick start
 
-Requires Rust 1.94 or newer and a PostgreSQL database. See [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) for full setup, including creating the database.
+A release needs a PostgreSQL database. See [CONTRIBUTING.md](CONTRIBUTING.md#database) for creating one.
+
+1. Download the archive for your platform from the repository's GitHub releases, `netledger-server-windows-x64.zip` or `netledger-server-linux-x64.tar.gz`, and extract it. Releases after 0.1.0 include the web UI.
+2. Set `DATABASE_URL` in the environment or in a `.env` file in the working directory. See [docs/configuration.md](docs/configuration.md).
+3. Run the server:
+
+   ```powershell
+   .\netledger-server.exe
+   ```
+
+4. Open `http://127.0.0.1:8080` in a browser. This is the default bind address.
+
+To build and run from source instead, with Rust 1.94 or newer and Node.js, see [CONTRIBUTING.md](CONTRIBUTING.md#development-setup):
 
 ```powershell
 Copy-Item .env.example .env
+npm --prefix web install
+npm --prefix web run build
 cargo run -p netledger-server
-curl.exe http://127.0.0.1:8080/health/ready
 ```
 
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): development setup, workflow, and pull request requirements
 - [docs/configuration.md](docs/configuration.md): environment variables
-- [docs/api.md](docs/api.md): HTTP endpoints and error format
+- [docs/api.md](docs/api.md): HTTP endpoints, error format, web UI routing, and security headers
 - [docs/adr/](docs/adr/): architecture decision records
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities
 - [CHANGELOG.md](CHANGELOG.md): changes in each release
@@ -28,7 +43,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 ## Project layout
 
 - `crates/netledger-server`: the Axum HTTP server
-- `web/`: the React and TypeScript front end, built with Vite
+- `web/`: the React and TypeScript front end, built with Vite into `web/dist`, which the server serves
 - `migrations/`: SQL schema migrations, embedded in the server binary and applied on startup
 - `.sqlx/`: committed query metadata so the project builds without a database
 - `compose.yml`: optional local PostgreSQL container for development
@@ -41,6 +56,7 @@ curl.exe http://127.0.0.1:8080/health/ready
 - Server with embedded migrations, liveness and readiness checks
 - Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, and `DELETE /api/subnets/{id}`
 - JSON error responses
+- Web UI served by the server and embedded in release builds, with security headers on every response
 - Web UI: subnet list
 - Create subnets from the web UI
 - Delete subnets from the web UI, with confirmation
