@@ -24,9 +24,11 @@ jobs:
           changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
           echo "Changed files:"
           echo "$changed"
-          code=$(echo "$changed" | grep -E '^(crates/|web/|migrations/|compose\.ya?ml$)' || true)
-          docs=$(echo "$changed" | grep -E '^(README\.md$|docs/)' || true)
+          code=$(echo "$changed" \
+            | grep -E '^(crates/|web/|migrations/|compose\.ya?ml$)' \
+            | grep -v -E '^web/package(-lock)?\.json$' || true)
+          docs=$(echo "$changed" | grep -E '^(README\.md$|CONTRIBUTING\.md$|docs/)' || true)
           if [ -n "$code" ] && [ -z "$docs" ]; then
-            echo "::error::Code changed but README.md and docs/ did not. Update the docs, or add the 'no-docs-needed' label if this change has no user-facing effect."
+            echo "::error::Code changed but README.md, CONTRIBUTING.md, and docs/ did not. Update the docs, or add the 'no-docs-needed' label if this change has no user-facing effect."
             exit 1
           fi
