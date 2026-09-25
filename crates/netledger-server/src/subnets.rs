@@ -430,7 +430,10 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"], "cidr must be inside the parent subnet's network");
+        assert_eq!(
+            body["error"],
+            "cidr must be inside the parent subnet's network"
+        );
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
@@ -441,7 +444,10 @@ mod tests {
         let (status, body) = create(&app, json!({ "cidr": "10.0.5.0/24", "name": "Inside" })).await;
 
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["error"], "cidr overlaps another subnet at the same level");
+        assert_eq!(
+            body["error"],
+            "cidr overlaps another subnet at the same level"
+        );
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
