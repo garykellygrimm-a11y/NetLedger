@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT cidr AS \"cidr: IpNet\", name, $2 << cidr AS \"contains_child!\"\n            FROM subnet\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cidr: IpNet",
+        "type_info": "Cidr",
+        "origin": {
+          "Table": {
+            "table": "subnet",
+            "name": "cidr"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "subnet",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "contains_child!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "abe53cbf54888998de7991b8c2696d1ad4e72d99dfa67fd66e47648e04e78fba"
+}

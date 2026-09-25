@@ -85,18 +85,33 @@ Creates a subnet. The request body must be a JSON object sent with `Content-Type
 
 Character limits count Unicode characters, not bytes. Fields not listed above are rejected.
 
-The database enforces two hierarchy rules on every subnet:
+Every subnet must also follow two hierarchy rules:
 
 - Containment: a subnet with a `parent_id` must lie inside the parent's network and be smaller than it. `10.0.1.0/24` can be a child of `10.0.0.0/16`; `192.168.50.0/24` and `10.0.0.0/16` itself cannot.
-- Overlap: subnets with the same parent must not overlap. Top-level subnets, those with a null `parent_id`, count as one level, so two top-level subnets must not overlap either. A network that falls inside another at the same level is an overlap: with `10.0.0.0/16` at the top level, a second top-level `10.0.5.0/24` is rejected and must be created as a child of `10.0.0.0/16` instead.
+- Overlap: subnets with the same parent must not overlap. Top-level subnets, those with a null `parent_id`, count as one level, so two top-level subnets must not overlap either.
+
+Two CIDR networks can never partly overlap. Either they share no addresses, or one contains the other, or they are the same network. An overlap at the same level is therefore always one of three cases, each with its own message:
+
+- The new `cidr` is the same network as an existing subnet.
+- The new `cidr` is inside an existing subnet. With `10.0.0.0/16` at the top level, a second top-level `10.0.5.0/24` is rejected; create it with `10.0.0.0/16` as its parent instead.
+- The new `cidr` contains an existing subnet. With `10.0.0.0/16` at the top level, a top-level `10.0.0.0/8` is rejected. Subnets cannot be moved to a new parent, so create larger subnets before the subnets inside them.
 
 IPv4 and IPv6 networks never overlap each other. An IPv6 subnet cannot be a child of an IPv4 subnet, or the reverse, because it is not inside the parent's network.
 
-Rules are checked in the order `cidr`, `name`, `description`, `vlan_id`, and only the first failure is reported. The duplicate `cidr`, `parent_id`, and hierarchy checks happen when the row is inserted, after the other rules pass. Among these, the containment rule is checked first.
+Checks run in this order, and only the first failure is reported:
+
+1. The field rules in the table, in the order `cidr`, `name`, `description`, `vlan_id`.
+2. If `parent_id` is set, the parent must exist, and then the containment rule is checked against it.
+3. The overlap rule is checked against the other subnets at the same level. If the new `cidr` contains more than one of them, the message names only one.
+4. The row is inserted.
+
+A child with the same network as its parent fails at step 2 with `400`, not with the duplicate `cidr` message.
+
+The database enforces the same rules with a trigger and constraints. Two requests that arrive at the same moment can both pass steps 2 and 3, for example two overlapping top-level subnets. The database then rejects one of them at step 4 with `409 Conflict` and a generic message: `cidr overlaps another subnet at the same level`, or `a subnet with this cidr already exists` if the two networks are the same. If the parent is deleted between step 2 and step 4, the response is `400` with `parent_id does not refer to an existing subnet`. The generic `400` message `cidr must be inside the parent subnet's network` comes from the database's containment trigger. The API never changes a subnet's `cidr`, so this message should appear only if the database is modified outside the API between step 2 and step 4.
 
 - `201 Created` with the new subnet object
-- `400 Bad Request` if a rule above fails, including the containment rule, or the body is not valid JSON
-- `409 Conflict` if a subnet with the same `cidr` already exists, or the `cidr` overlaps another subnet at the same level
+- `400 Bad Request` if a field rule fails, `parent_id` does not exist, the `cidr` is not inside the parent's network, or the body is not valid JSON
+- `409 Conflict` if the `cidr` overlaps another subnet at the same level, including the same network
 - `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
 - `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a required field is missing, a field has the wrong type or an unparseable value, or an unknown field is present
 
@@ -110,9 +125,20 @@ Validation messages returned in `error`:
 | `description` is too long | `description must be at most 1000 characters` |
 | `vlan_id` is out of range | `vlan_id must be between 1 and 4094` |
 | `parent_id` does not exist | `parent_id does not refer to an existing subnet` |
-| `cidr` already exists | `a subnet with this cidr already exists` |
-| `cidr` is not inside the parent's network | `cidr must be inside the parent subnet's network` |
-| `cidr` overlaps another subnet with the same parent, or another top-level subnet | `cidr overlaps another subnet at the same level` |
+| `cidr` is not inside the parent's network | `cidr <cidr> is not inside the parent subnet <parent cidr> (<parent name>)` |
+| `cidr` is the same network as a subnet at the same level | `a subnet with this cidr already exists` |
+| `cidr` is inside a subnet at the same level | `cidr <cidr> is inside the existing subnet <existing cidr> (<existing name>); choose it as the parent` |
+| `cidr` contains a subnet at the same level | `cidr <cidr> contains the existing subnet <existing cidr> (<existing name>) at the same level; create larger subnets before the subnets inside them` |
+| Containment rejected by the database (see above) | `cidr must be inside the parent subnet's network` |
+| Overlap rejected by the database for simultaneous requests | `cidr overlaps another subnet at the same level` |
+
+Placeholders in angle brackets are filled in from the request and the existing subnet. For example, with a top-level subnet `10.0.0.0/16` named `Datacenter`, a top-level `10.0.5.0/24` returns:
+
+```json
+{ "error": "cidr 10.0.5.0/24 is inside the existing subnet 10.0.0.0/16 (Datacenter); choose it as the parent" }
+```
+
+A child `192.168.50.0/24` of the subnet `10.0.0.0/16` named `Parent` returns `400` with `cidr 192.168.50.0/24 is not inside the parent subnet 10.0.0.0/16 (Parent)`.
 
 ### `DELETE /api/subnets/{id}`
 
