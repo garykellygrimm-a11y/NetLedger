@@ -13,8 +13,8 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - list subnets in the web UI
 - add a form to create subnets in the web UI
-- serve the web UI from the server binary" -m "Embed the built front end with rust-embed so release binaries serve the API and UI from one file. Add a JSON 404 fallback for unknown /api routes and security headers on every response (CSP, nosniff, frame denial, no-referrer). Build the front end in the release workflow and fail if it is missing. Version web/package.json and web/package-lock.json with the server in Knope. Fix the charset and viewport tags in web/index.html. Document the embedded UI and security headers.
-- delete subnets from the web UI
+- Embed the built front end with rust-embed so release binaries serve the API and UI from one file. 
+- serve the web UI from the server binary
 
 ### Fixes
 
