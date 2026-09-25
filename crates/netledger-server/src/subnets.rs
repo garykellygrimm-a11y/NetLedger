@@ -2,6 +2,7 @@ use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
@@ -118,6 +119,7 @@ async fn create_subnet(
     AppJson(input): AppJson<CreateSubnet>,
 ) -> Result<(StatusCode, Json<Subnet>), AppError> {
     input.validate()?;
+    check_placement(&state.db, &input).await?;
 
     let subnet = sqlx::query_as!(
         Subnet,
@@ -137,6 +139,64 @@ async fn create_subnet(
     .map_err(map_create_error)?;
 
     Ok((StatusCode::CREATED, Json(subnet)))
+}
+
+async fn check_placement(db: &PgPool, input: &CreateSubnet) -> Result<(), AppError> {
+    if let Some(parent_id) = input.parent_id {
+        let parent = sqlx::query!(
+            r#"
+            SELECT cidr AS "cidr: IpNet", name, $2 << cidr AS "contains_child!"
+            FROM subnet
+            WHERE id = $1
+            "#,
+            parent_id,
+            input.cidr,
+        )
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest("parent_id does not refer to an existing subnet".to_string())
+        })?;
+
+        if !parent.contains_child {
+            return Err(AppError::BadRequest(format!(
+                "cidr {} is not inside the parent subnet {} ({})",
+                input.cidr, parent.cidr, parent.name
+            )));
+        }
+    }
+
+    let overlap = sqlx::query!(
+        r#"
+        SELECT cidr AS "cidr: IpNet", name, cidr >> $1 AS "contains_new!"
+        FROM subnet
+        WHERE parent_id IS NOT DISTINCT FROM $2 AND cidr && $1
+        LIMIT 1
+        "#,
+        input.cidr,
+        input.parent_id,
+    )
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(existing) = overlap {
+        let message = if existing.cidr == input.cidr {
+            "a subnet with this cidr already exists".to_string()
+        } else if existing.contains_new {
+            format!(
+                "cidr {} is inside the existing subnet {} ({}); choose it as the parent",
+                input.cidr, existing.cidr, existing.name
+            )
+        } else {
+            format!(
+                "cidr {} contains the existing subnet {} ({}) at the same level; create larger subnets before the subnets inside them",
+                input.cidr, existing.cidr, existing.name
+            )
+        };
+        return Err(AppError::Conflict(message));
+    }
+
+    Ok(())
 }
 
 async fn delete_subnet(
@@ -204,6 +264,7 @@ mod tests {
     use serde_json::{Value, json};
     use sqlx::PgPool;
     use tower::ServiceExt;
+    use uuid::Uuid;
 
     async fn send(
         app: &Router,
@@ -432,7 +493,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body["error"],
-            "cidr must be inside the parent subnet's network"
+            "cidr 192.168.50.0/24 is not inside the parent subnet 10.0.0.0/16 (Parent)"
         );
     }
 
@@ -446,7 +507,7 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(
             body["error"],
-            "cidr overlaps another subnet at the same level"
+            "cidr 10.0.5.0/24 is inside the existing subnet 10.0.0.0/16 (Datacenter); choose it as the parent"
         );
     }
 
@@ -506,5 +567,62 @@ mod tests {
 
         assert_eq!(v4, StatusCode::CREATED);
         assert_eq!(v6, StatusCode::CREATED);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn larger_subnet_after_a_smaller_one_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
+
+        let (status, body) =
+            create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Supernet" })).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("contains the existing subnet 10.0.0.0/16 (Datacenter)")
+        );
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn database_rejects_a_child_outside_its_parent_directly(pool: PgPool) {
+        let parent_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO subnet (cidr, name) VALUES ('10.0.0.0/16', 'Parent') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let err = sqlx::query(
+            "INSERT INTO subnet (cidr, name, parent_id) VALUES ('192.168.50.0/24', 'Outside', $1)",
+        )
+        .bind(parent_id)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+
+        let db_err = err.as_database_error().unwrap();
+        assert_eq!(db_err.constraint(), Some("subnet_within_parent"));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn concurrent_overlapping_creates_admit_exactly_one(pool: PgPool) {
+        let app = crate::app(pool);
+
+        for round in 0..20 {
+            let larger = format!("10.{round}.0.0/16");
+            let smaller = format!("10.{round}.0.0/17");
+
+            let (first, second) = tokio::join!(
+                create(&app, json!({ "cidr": larger, "name": "Larger" })),
+                create(&app, json!({ "cidr": smaller, "name": "Smaller" })),
+            );
+
+            let mut statuses = [first.0.as_u16(), second.0.as_u16()];
+            statuses.sort();
+            assert_eq!(statuses, [201, 409], "round {round}");
+        }
     }
 }
