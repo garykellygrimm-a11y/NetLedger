@@ -107,7 +107,7 @@ Checks run in this order, and only the first failure is reported:
 
 A child with the same network as its parent fails at step 2 with `400`, not with the duplicate `cidr` message.
 
-The database enforces the same rules with a trigger and constraints. Two requests that arrive at the same moment can both pass steps 2 and 3, for example two overlapping top-level subnets. The database then rejects one of them at step 4 with `409 Conflict` and a generic message: `cidr overlaps another subnet at the same level`, or `a subnet with this cidr already exists` if the two networks are the same. If the parent is deleted between step 2 and step 4, the response is `400` with `parent_id does not refer to an existing subnet`. The generic `400` message `cidr must be inside the parent subnet's network` comes from the database's containment trigger. The API never changes a subnet's `cidr`, so this message should appear only if the database is modified outside the API between step 2 and step 4.
+The database enforces the same rules with a trigger and constraints. Two requests that arrive at the same moment can both pass steps 2 and 3, for example two overlapping top-level subnets. The database then rejects one of them at step 4 with `409 Conflict` and a generic message: `cidr overlaps another subnet at the same level`, or `a subnet with this cidr already exists` if the two networks are the same. Depending on timing, the database may instead detect that the two requests are waiting on each other and abort one of them. That request also receives `409 Conflict`, with `cidr conflicts with another subnet being created at the same time; retry the request`. If the parent is deleted between step 2 and step 4, the response is `400` with `parent_id does not refer to an existing subnet`. The generic `400` message `cidr must be inside the parent subnet's network` comes from the database's containment trigger. The API never changes a subnet's `cidr`, so this message should appear only if the database is modified outside the API between step 2 and step 4.
 
 - `201 Created` with the new subnet object
 - `400 Bad Request` if a field rule fails, `parent_id` does not exist, the `cidr` is not inside the parent's network, or the body is not valid JSON
@@ -131,6 +131,7 @@ Validation messages returned in `error`:
 | `cidr` contains a subnet at the same level | `cidr <cidr> contains the existing subnet <existing cidr> (<existing name>) at the same level; create larger subnets before the subnets inside them` |
 | Containment rejected by the database (see above) | `cidr must be inside the parent subnet's network` |
 | Overlap rejected by the database for simultaneous requests | `cidr overlaps another subnet at the same level` |
+| Simultaneous overlapping requests aborted by the database | `cidr conflicts with another subnet being created at the same time; retry the request` |
 
 Placeholders in angle brackets are filled in from the request and the existing subnet. For example, with a top-level subnet `10.0.0.0/16` named `Datacenter`, a top-level `10.0.5.0/24` returns:
 

@@ -11,6 +11,7 @@ use crate::{
     extractors::{AppJson, AppPath},
 };
 
+const DEADLOCK_DETECTED: &str = "40P01";
 const NAME_MAX_CHARS: usize = 100;
 const DESCRIPTION_MAX_CHARS: usize = 1000;
 
@@ -217,6 +218,13 @@ async fn delete_subnet(
 
 fn map_create_error(err: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db_err) = &err {
+        if db_err.code().as_deref() == Some(DEADLOCK_DETECTED) {
+            return AppError::Conflict(
+                "cidr conflicts with another subnet being created at the same time; retry the request"
+                    .to_string(),
+            );
+        }
+
         match db_err.constraint() {
             Some("subnet_cidr_key") => {
                 return AppError::Conflict("a subnet with this cidr already exists".to_string());
