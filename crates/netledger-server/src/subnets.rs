@@ -166,6 +166,16 @@ fn map_create_error(err: sqlx::Error) -> AppError {
                     "parent_id does not refer to an existing subnet".to_string(),
                 );
             }
+            Some("subnet_within_parent") => {
+                return AppError::BadRequest(
+                    "cidr must be inside the parent subnet's network".to_string(),
+                );
+            }
+            Some("subnet_no_overlapping_siblings") => {
+                return AppError::Conflict(
+                    "cidr overlaps another subnet at the same level".to_string(),
+                );
+            }
             _ => {}
         }
     }
@@ -402,5 +412,93 @@ mod tests {
 
         assert_eq!(status, StatusCode::CONFLICT);
         assert!(body["error"].as_str().unwrap().contains("child subnets"));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn child_outside_its_parent_returns_400(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
+
+        let (status, body) = create(
+            &app,
+            json!({
+                "cidr": "192.168.50.0/24",
+                "name": "Wrong parent",
+                "parent_id": parent["id"]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "cidr must be inside the parent subnet's network");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn overlapping_top_level_subnets_return_409(pool: PgPool) {
+        let app = crate::app(pool);
+        create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
+
+        let (status, body) = create(&app, json!({ "cidr": "10.0.5.0/24", "name": "Inside" })).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "cidr overlaps another subnet at the same level");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn overlapping_siblings_return_409(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
+        create(
+            &app,
+            json!({ "cidr": "10.0.1.0/24", "name": "First", "parent_id": parent["id"] }),
+        )
+        .await;
+
+        let (status, _) = create(
+            &app,
+            json!({ "cidr": "10.0.1.128/25", "name": "Second", "parent_id": parent["id"] }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_valid_hierarchy_is_accepted(pool: PgPool) {
+        let app = crate::app(pool);
+        let (status, root) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Root" })).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, child) = create(
+            &app,
+            json!({ "cidr": "10.0.1.0/24", "name": "Child", "parent_id": root["id"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, _) = create(
+            &app,
+            json!({ "cidr": "10.0.2.0/24", "name": "Sibling", "parent_id": root["id"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, _) = create(
+            &app,
+            json!({ "cidr": "10.0.1.0/26", "name": "Grandchild", "parent_id": child["id"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn ipv4_and_ipv6_networks_never_overlap(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (v4, _) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "IPv4" })).await;
+        let (v6, _) = create(&app, json!({ "cidr": "fd00::/8", "name": "IPv6" })).await;
+
+        assert_eq!(v4, StatusCode::CREATED);
+        assert_eq!(v6, StatusCode::CREATED);
     }
 }
