@@ -145,7 +145,7 @@ Each commit has one purpose. Stage specific files rather than using `git add .`,
 
 ### Checks before opening a pull request
 
-Run the same checks CI runs:
+Run the same checks CI runs. The `ci` workflow has two jobs. The `rust` job runs:
 
 ```powershell
 cargo fmt --all --check
@@ -154,9 +154,11 @@ cargo build --workspace --locked
 cargo test --workspace --locked
 ```
 
-If you changed `web/`, also lint, type-check, and build the front end from `web/`. CI does not run these checks yet:
+The `web` job uses Node.js 24 and runs the following from `web/`. `npm run build` also type-checks the front end:
 
 ```powershell
+cd web
+npm ci
 npm run lint
 npm run build
 ```
@@ -168,9 +170,13 @@ Then confirm:
 
 ### Documentation
 
-Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file must also update `README.md` or a file under `docs/`. The `docs-check` workflow enforces this; changes to `CONTRIBUTING.md` alone don't satisfy it. For changes with no user-facing effect, such as formatting or internal refactors, apply the `no-docs-needed` label instead.
+Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file must also update `README.md`, `CONTRIBUTING.md`, or a file under `docs/`. The `docs-check` workflow enforces this. Changes limited to `web/package.json` and `web/package-lock.json`, such as dependency updates, are exempt. For changes with no user-facing effect, such as formatting or internal refactors, apply the `no-docs-needed` label instead.
 
 Significant design decisions are recorded in [docs/adr/](docs/adr/).
+
+### Dependency updates
+
+Dependabot, configured in `.github/dependabot.yml`, checks weekly for updates to Cargo dependencies, npm dependencies in `web/`, and GitHub Actions. It waits 7 days after a release before proposing an update. Minor and patch updates to Cargo dependencies are grouped into one pull request, and minor and patch updates to npm dependencies into another. GitHub Actions updates are grouped into one pull request. Major TypeScript upgrades are ignored until the Vite template adopts them.
 
 ## Releases
 

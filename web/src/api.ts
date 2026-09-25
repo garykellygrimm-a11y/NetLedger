@@ -33,6 +33,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status, message)
   }
 
+  if (response.status === 204) {
+    return undefined as T
+  }
+
   return (await response.json()) as T
 }
 
@@ -46,4 +50,8 @@ export function createSubnet(input: CreateSubnetInput): Promise<Subnet> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export function deleteSubnet(id: string): Promise<void> {
+  return request<void>(`/subnets/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
