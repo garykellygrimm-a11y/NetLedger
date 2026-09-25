@@ -10,7 +10,7 @@ The server serves both the API and the web UI at its bind address. Release build
 
 ## Quick start
 
-A release needs a PostgreSQL database. See [CONTRIBUTING.md](CONTRIBUTING.md#database) for creating one.
+A release needs a PostgreSQL database with the `btree_gist` extension files installed. See [CONTRIBUTING.md](CONTRIBUTING.md#database) for creating one. If you are upgrading an existing database, see [Upgrading an existing database](CONTRIBUTING.md#upgrading-an-existing-database) first.
 
 1. Download the archive for your platform from the repository's GitHub releases, `netledger-server-windows-x64.zip` or `netledger-server-linux-x64.tar.gz`, and extract it. Releases after 0.1.0 include the web UI.
 2. Set `DATABASE_URL` in the environment or in a `.env` file in the working directory. See [docs/configuration.md](docs/configuration.md).
@@ -55,6 +55,7 @@ cargo run -p netledger-server
 
 - Server with embedded migrations, liveness and readiness checks
 - Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, and `DELETE /api/subnets/{id}`
+- Subnet containment and overlap rules, enforced by the database
 - JSON error responses
 - Web UI served by the server and embedded in release builds, with security headers on every response
 - Web UI: subnet list

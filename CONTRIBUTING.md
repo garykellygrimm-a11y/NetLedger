@@ -7,7 +7,7 @@ This document covers setting up a development environment and how changes are pr
 ### Prerequisites
 
 - Rust 1.94 or newer (the `rust-version` in `Cargo.toml`)
-- PostgreSQL 14 or newer. Development uses PostgreSQL 18.
+- PostgreSQL 14 or newer, with the `btree_gist` extension files installed (see [Database](#database)). Development uses PostgreSQL 18.
 - Node.js 24 LTS, or at least 22.12, needed only to work on the web front end in `web/` or to build it for the server to serve
 - sqlx-cli, needed only to create migrations or change SQL queries:
 
@@ -42,6 +42,8 @@ ALTER SYSTEM SET listen_addresses = 'localhost';
 ```powershell
 docker compose up -d
 ```
+
+**The `btree_gist` extension.** NetLedger requires the PostgreSQL `btree_gist` extension, which the rule against overlapping subnets depends on. A migration runs `CREATE EXTENSION IF NOT EXISTS btree_gist` itself, so you do not create it by hand. It is a trusted extension, so the `netledger` role can create it without superuser rights because it owns the database. The extension's files must still be present on the PostgreSQL server. They are included in the Windows installer and in the official `postgres` Docker image that `compose.yml` uses. On RHEL, install the `postgresql-contrib` package.
 
 ### Configuration
 
@@ -101,6 +103,17 @@ sqlx migrate add -r <name>
 ```
 
 Every migration needs both an `.up.sql` and a `.down.sql` file. Never edit a migration that has been merged: databases record a checksum of every migration they apply and will refuse to start if an applied migration changes. Fix mistakes with a new migration instead.
+
+### Upgrading an existing database
+
+The migration that adds the subnet hierarchy rules, described in [docs/api.md](docs/api.md#post-apisubnets), first checks the existing data. If a subnet is not inside its parent's network, or two subnets with the same parent overlap, the migration stops, nothing is changed, and the server exits with `failed to run database migrations`. The error names the subnets by CIDR:
+
+```text
+subnet <cidr> is not inside its parent <cidr>; correct its parent before upgrading
+subnets <cidr> and <cidr> overlap at the same level; make one the parent of the other before upgrading
+```
+
+The check reports only the first problem it finds. Correct the `parent_id` of the named subnets, then restart the server, and repeat until the migration succeeds.
 
 ### SQL queries and the offline cache
 
