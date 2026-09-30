@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE subnet\n        SET parent_id = $1, updated_at = now()\n        WHERE parent_id IS NOT DISTINCT FROM $2\n          AND id <> $1\n          AND cidr << $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7181b562789d8679e1c1332bdccc338dd1ce4d4a8d2e177267005344c33d9334"
+}
