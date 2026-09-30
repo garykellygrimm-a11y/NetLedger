@@ -1,6 +1,6 @@
 # HTTP API
 
-All endpoints are unauthenticated in the current version, including `POST /api/subnets` and `DELETE /api/subnets/{id}`, which write to the database. Anyone who can reach the server can create and delete subnets. Requests and responses use JSON unless noted.
+All endpoints are unauthenticated in the current version, including `POST /api/subnets`, `PATCH /api/subnets/{id}`, and `DELETE /api/subnets/{id}`, which write to the database. Anyone who can reach the server can create, change, and delete subnets. Requests and responses use JSON unless noted.
 
 ## Health
 
@@ -140,6 +140,74 @@ Placeholders in angle brackets are filled in from the request and the existing s
 ```
 
 A child `192.168.50.0/24` of the subnet `10.0.0.0/16` named `Parent` returns `400` with `cidr 192.168.50.0/24 is not inside the parent subnet 10.0.0.0/16 (Parent)`.
+
+### `PATCH /api/subnets/{id}`
+
+Changes a subnet's `name`, `description`, and `vlan_id`. The request body must be a JSON object sent with `Content-Type: application/json`. It follows JSON Merge Patch semantics ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)): a field that is omitted keeps its current value, a field with a value replaces the current value, and `"vlan_id": null` clears the VLAN.
+
+For example, this request changes the description of the `Servers` subnet shown above and clears its VLAN, leaving its name unchanged:
+
+```json
+{
+  "description": "Rack 5 application servers",
+  "vlan_id": null
+}
+```
+
+Response, `200 OK`:
+
+```json
+{
+  "id": "7a904281-76dd-4a32-a76c-f86f6bc0d839",
+  "cidr": "10.0.1.0/24",
+  "name": "Servers",
+  "description": "Rack 5 application servers",
+  "vlan_id": null,
+  "parent_id": null,
+  "created_at": "2026-09-22T02:41:36.123456Z",
+  "updated_at": "2026-09-29T14:05:12.654321Z"
+}
+```
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `name` | string | Must not be null. Leading and trailing whitespace is removed before validation and storage. After trimming, must be 1 to 100 characters. |
+| `description` | string | Must not be null; send an empty string to clear it. At most 1000 characters. Stored as sent, without trimming. |
+| `vlan_id` | integer or null | 1 through 4094, or null to clear the VLAN. |
+
+All fields are optional, but the request must include at least one of them; an empty object `{}` is rejected. A field sent with its current value counts as a change. Character limits count Unicode characters, not bytes.
+
+`cidr` and `parent_id` cannot be changed yet. Sending either of them, or any other field not listed above, is rejected with `422`. Because `cidr` and `parent_id` never change, the hierarchy rules described under `POST /api/subnets` are not checked again.
+
+Every successful request sets `updated_at` to the current time. `created_at` never changes.
+
+Checks run in this order, and only the first failure is reported:
+
+1. `id` must be a valid UUID.
+2. The body must be JSON with the request shape.
+3. The body must include at least one field, and then the field rules in the table are checked in the order `name`, `description`, `vlan_id`.
+4. The subnet must exist.
+
+A request with an invalid body for an ID that does not exist therefore returns `400` or `422`, not `404`.
+
+- `200 OK` with the updated subnet object
+- `400 Bad Request` if `id` is not a valid UUID, the body is empty (`{}`), a field rule fails, `name` or `description` is null, or the body is not valid JSON
+- `404 Not Found` if no subnet has that ID
+- `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
+- `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a field has the wrong type or an unparseable value, or an unknown field is present, including `cidr` and `parent_id`
+
+Validation messages returned in `error`:
+
+| Condition | `error` |
+| --- | --- |
+| The body includes none of the fields | `request must change at least one field` |
+| `name` is null | `name must not be null` |
+| `name` is empty after trimming | `name must not be empty` |
+| `name` is too long | `name must be at most 100 characters` |
+| `description` is null | `description must not be null; send an empty string to clear it` |
+| `description` is too long | `description must be at most 1000 characters` |
+| `vlan_id` is out of range | `vlan_id must be between 1 and 4094` |
+| No subnet has that ID | `not found` |
 
 ### `DELETE /api/subnets/{id}`
 
