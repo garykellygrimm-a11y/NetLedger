@@ -4,7 +4,7 @@ NetLedger is an IP address management (IPAM) tool for tracking subnets and addre
 
 ## Status
 
-NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, edit, and delete subnets. Editing through the API covers a subnet's name, description, and VLAN; its CIDR and parent cannot be changed yet. The web UI lists subnets and has a form to create them. When the API rejects a subnet, the form shows the API's error message. After a subnet is created, the list refreshes to show it. Each row in the subnet list has a Delete button that asks for confirmation before deleting the subnet. A subnet that has child subnets cannot be deleted; in that case the UI shows the API's conflict message. The web UI cannot yet edit subnets. There is no authentication yet.
+NetLedger is in early development and is not ready for production use. The server applies its own database schema on startup, exposes health checks, and provides endpoints to list, view, create, edit, and delete subnets. Editing through the API covers a subnet's name, description, and VLAN; its CIDR cannot be changed yet. The server places each subnet under the smallest subnet that contains it, so subnets can be created in any order. The web UI lists subnets and has a form to create them. When the API rejects a subnet, the form shows the API's error message. After a subnet is created, the list refreshes to show it. Each row in the subnet list has a Delete button that asks for confirmation before deleting the subnet. Deleting a subnet moves its child subnets up to its parent. The web UI cannot yet edit subnets. There is no authentication yet.
 
 The server serves both the API and the web UI at its bind address. Release builds embed the built web UI in the binary, so a release is a single file.
 
@@ -56,6 +56,7 @@ cargo run -p netledger-server
 - Server with embedded migrations, liveness and readiness checks
 - Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, `PATCH /api/subnets/{id}` for name, description, and VLAN, and `DELETE /api/subnets/{id}`
 - Subnet containment and overlap rules, enforced by the database
+- Automatic subnet placement: each new subnet goes under the smallest subnet that contains it, and existing subnets inside it move under it, so subnets can be created in any order; deleting a subnet moves its children to its parent
 - JSON error responses
 - Web UI served by the server and embedded in release builds, with security headers on every response
 - Web UI: subnet list
@@ -69,7 +70,7 @@ cargo run -p netledger-server
 - Individual IP address tracking and network discovery
 - Authentication
 - Editing subnets from the web UI
-- Changing a subnet's CIDR or parent through the API
+- Changing a subnet's CIDR through the API
 - Installers and deployment guidance for Windows and RHEL
 
 ## License

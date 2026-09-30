@@ -289,14 +289,35 @@ async fn delete_subnet(
     State(state): State<AppState>,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let result = sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
-        .execute(&state.db)
-        .await
-        .map_err(map_delete_error)?;
+    let mut tx = state.db.begin().await?;
 
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PLACEMENT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("SET CONSTRAINTS subnet_no_overlapping_siblings DEFERRED")
+        .execute(&mut *tx)
+        .await?;
+
+    let parent_id = sqlx::query_scalar!("SELECT parent_id FROM subnet WHERE id = $1", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    sqlx::query!(
+        "UPDATE subnet SET parent_id = $2, updated_at = now() WHERE parent_id = $1",
+        id,
+        parent_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -331,16 +352,6 @@ fn map_create_error(err: sqlx::Error) -> AppError {
             }
             _ => {}
         }
-    }
-
-    AppError::Database(err)
-}
-
-fn map_delete_error(err: sqlx::Error) -> AppError {
-    if let sqlx::Error::Database(db_err) = &err
-        && db_err.constraint() == Some("subnet_parent_id_fkey")
-    {
-        return AppError::Conflict("subnet has child subnets; delete them first".to_string());
     }
 
     AppError::Database(err)
@@ -540,16 +551,22 @@ mod tests {
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn deleting_a_parent_with_children_returns_409(pool: PgPool) {
+    async fn deleting_a_subnet_releases_its_children_to_its_parent(pool: PgPool) {
         let app = crate::app(pool);
-        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
-        let parent_id = parent["id"].as_str().unwrap();
-        create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Child" })).await;
+        let (_, root) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Root" })).await;
+        let (_, middle) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
+        let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
+        assert_eq!(leaf["parent_id"], middle["id"]);
 
-        let (status, body) = send(&app, "DELETE", &format!("/api/subnets/{parent_id}"), None).await;
+        let uri = format!("/api/subnets/{}", middle["id"].as_str().unwrap());
+        let (status, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(get(&app, &leaf).await["parent_id"], root["id"]);
 
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"].as_str().unwrap().contains("child subnets"));
+        let uri = format!("/api/subnets/{}", root["id"].as_str().unwrap());
+        let (status, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(get(&app, &leaf).await["parent_id"], Value::Null);
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
