@@ -9,7 +9,7 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Features
 
 - show subnets as an indented tree in the web UI
-- edit a subnet's name, desccription and VLAN in the web UI
+- edit a subnet's name, description and VLAN in the web UI
 
 ## 0.4.0 (2026-09-30)
 
