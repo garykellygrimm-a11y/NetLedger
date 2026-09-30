@@ -2,7 +2,6 @@ use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
@@ -12,6 +11,7 @@ use crate::{
 };
 
 const DEADLOCK_DETECTED: &str = "40P01";
+const PLACEMENT_LOCK_KEY: i64 = 0x4e45_544c_4544_4752;
 const NAME_MAX_CHARS: usize = 100;
 const DESCRIPTION_MAX_CHARS: usize = 1000;
 
@@ -35,7 +35,6 @@ pub struct CreateSubnet {
     #[serde(default)]
     pub description: String,
     pub vlan_id: Option<i32>,
-    pub parent_id: Option<Uuid>,
 }
 
 impl CreateSubnet {
@@ -187,7 +186,30 @@ async fn create_subnet(
     AppJson(input): AppJson<CreateSubnet>,
 ) -> Result<(StatusCode, Json<Subnet>), AppError> {
     input.validate()?;
-    check_placement(&state.db, &input).await?;
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PLACEMENT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("SET CONSTRAINTS subnet_no_overlapping_siblings DEFERRED")
+        .execute(&mut *tx)
+        .await?;
+
+    let parent_id = sqlx::query_scalar!(
+        r#"
+        SELECT id
+        FROM subnet
+        WHERE cidr >> $1
+        ORDER BY masklen(cidr) DESC
+        LIMIT 1
+        "#,
+        input.cidr,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
 
     let subnet = sqlx::query_as!(
         Subnet,
@@ -200,71 +222,31 @@ async fn create_subnet(
         input.name.trim(),
         input.description,
         input.vlan_id,
-        input.parent_id,
+        parent_id,
     )
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
     .map_err(map_create_error)?;
 
-    Ok((StatusCode::CREATED, Json(subnet)))
-}
-
-async fn check_placement(db: &PgPool, input: &CreateSubnet) -> Result<(), AppError> {
-    if let Some(parent_id) = input.parent_id {
-        let parent = sqlx::query!(
-            r#"
-            SELECT cidr AS "cidr: IpNet", name, $2 << cidr AS "contains_child!"
-            FROM subnet
-            WHERE id = $1
-            "#,
-            parent_id,
-            input.cidr,
-        )
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| {
-            AppError::BadRequest("parent_id does not refer to an existing subnet".to_string())
-        })?;
-
-        if !parent.contains_child {
-            return Err(AppError::BadRequest(format!(
-                "cidr {} is not inside the parent subnet {} ({})",
-                input.cidr, parent.cidr, parent.name
-            )));
-        }
-    }
-
-    let overlap = sqlx::query!(
+    sqlx::query!(
         r#"
-        SELECT cidr AS "cidr: IpNet", name, cidr >> $1 AS "contains_new!"
-        FROM subnet
-        WHERE parent_id IS NOT DISTINCT FROM $2 AND cidr && $1
-        LIMIT 1
+        UPDATE subnet
+        SET parent_id = $1, updated_at = now()
+        WHERE parent_id IS NOT DISTINCT FROM $2
+          AND id <> $1
+          AND cidr << $3
         "#,
+        subnet.id,
+        parent_id,
         input.cidr,
-        input.parent_id,
     )
-    .fetch_optional(db)
-    .await?;
+    .execute(&mut *tx)
+    .await
+    .map_err(map_create_error)?;
 
-    if let Some(existing) = overlap {
-        let message = if existing.cidr == input.cidr {
-            "a subnet with this cidr already exists".to_string()
-        } else if existing.contains_new {
-            format!(
-                "cidr {} is inside the existing subnet {} ({}); choose it as the parent",
-                input.cidr, existing.cidr, existing.name
-            )
-        } else {
-            format!(
-                "cidr {} contains the existing subnet {} ({}) at the same level; create larger subnets before the subnets inside them",
-                input.cidr, existing.cidr, existing.name
-            )
-        };
-        return Err(AppError::Conflict(message));
-    }
+    tx.commit().await.map_err(map_create_error)?;
 
-    Ok(())
+    Ok((StatusCode::CREATED, Json(subnet)))
 }
 
 async fn update_subnet(
@@ -307,14 +289,35 @@ async fn delete_subnet(
     State(state): State<AppState>,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let result = sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
-        .execute(&state.db)
-        .await
-        .map_err(map_delete_error)?;
+    let mut tx = state.db.begin().await?;
 
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PLACEMENT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("SET CONSTRAINTS subnet_no_overlapping_siblings DEFERRED")
+        .execute(&mut *tx)
+        .await?;
+
+    let parent_id = sqlx::query_scalar!("SELECT parent_id FROM subnet WHERE id = $1", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    sqlx::query!(
+        "UPDATE subnet SET parent_id = $2, updated_at = now() WHERE parent_id = $1",
+        id,
+        parent_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -349,16 +352,6 @@ fn map_create_error(err: sqlx::Error) -> AppError {
             }
             _ => {}
         }
-    }
-
-    AppError::Database(err)
-}
-
-fn map_delete_error(err: sqlx::Error) -> AppError {
-    if let sqlx::Error::Database(db_err) = &err
-        && db_err.constraint() == Some("subnet_parent_id_fkey")
-    {
-        return AppError::Conflict("subnet has child subnets; delete them first".to_string());
     }
 
     AppError::Database(err)
@@ -411,6 +404,11 @@ mod tests {
 
     async fn create(app: &Router, body: Value) -> (StatusCode, Value) {
         send(app, "POST", "/api/subnets", Some(body)).await
+    }
+
+    async fn get(app: &Router, subnet: &Value) -> Value {
+        let uri = format!("/api/subnets/{}", subnet["id"].as_str().unwrap());
+        send(app, "GET", &uri, None).await.1
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
@@ -491,23 +489,6 @@ mod tests {
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn nonexistent_parent_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
-
-        let (status, _) = create(
-            &app,
-            json!({
-                "cidr": "10.6.0.0/24",
-                "name": "Orphan",
-                "parent_id": "00000000-0000-0000-0000-000000000000"
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn list_is_ordered_by_network_address(pool: PgPool) {
         let app = crate::app(pool);
         for cidr in ["192.168.1.0/24", "10.0.0.0/8", "9.0.0.0/8"] {
@@ -570,103 +551,22 @@ mod tests {
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn deleting_a_parent_with_children_returns_409(pool: PgPool) {
+    async fn deleting_a_subnet_releases_its_children_to_its_parent(pool: PgPool) {
         let app = crate::app(pool);
-        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
-        let parent_id = parent["id"].as_str().unwrap();
-        create(
-            &app,
-            json!({ "cidr": "10.0.1.0/24", "name": "Child", "parent_id": parent_id }),
-        )
-        .await;
+        let (_, root) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Root" })).await;
+        let (_, middle) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
+        let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
+        assert_eq!(leaf["parent_id"], middle["id"]);
 
-        let (status, body) = send(&app, "DELETE", &format!("/api/subnets/{parent_id}"), None).await;
+        let uri = format!("/api/subnets/{}", middle["id"].as_str().unwrap());
+        let (status, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(get(&app, &leaf).await["parent_id"], root["id"]);
 
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"].as_str().unwrap().contains("child subnets"));
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn child_outside_its_parent_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
-        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
-
-        let (status, body) = create(
-            &app,
-            json!({
-                "cidr": "192.168.50.0/24",
-                "name": "Wrong parent",
-                "parent_id": parent["id"]
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error"],
-            "cidr 192.168.50.0/24 is not inside the parent subnet 10.0.0.0/16 (Parent)"
-        );
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn overlapping_top_level_subnets_return_409(pool: PgPool) {
-        let app = crate::app(pool);
-        create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
-
-        let (status, body) = create(&app, json!({ "cidr": "10.0.5.0/24", "name": "Inside" })).await;
-
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(
-            body["error"],
-            "cidr 10.0.5.0/24 is inside the existing subnet 10.0.0.0/16 (Datacenter); choose it as the parent"
-        );
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn overlapping_siblings_return_409(pool: PgPool) {
-        let app = crate::app(pool);
-        let (_, parent) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Parent" })).await;
-        create(
-            &app,
-            json!({ "cidr": "10.0.1.0/24", "name": "First", "parent_id": parent["id"] }),
-        )
-        .await;
-
-        let (status, _) = create(
-            &app,
-            json!({ "cidr": "10.0.1.128/25", "name": "Second", "parent_id": parent["id"] }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CONFLICT);
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn a_valid_hierarchy_is_accepted(pool: PgPool) {
-        let app = crate::app(pool);
-        let (status, root) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Root" })).await;
-        assert_eq!(status, StatusCode::CREATED);
-
-        let (status, child) = create(
-            &app,
-            json!({ "cidr": "10.0.1.0/24", "name": "Child", "parent_id": root["id"] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-
-        let (status, _) = create(
-            &app,
-            json!({ "cidr": "10.0.2.0/24", "name": "Sibling", "parent_id": root["id"] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-
-        let (status, _) = create(
-            &app,
-            json!({ "cidr": "10.0.1.0/26", "name": "Grandchild", "parent_id": child["id"] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
+        let uri = format!("/api/subnets/{}", root["id"].as_str().unwrap());
+        let (status, _) = send(&app, "DELETE", &uri, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(get(&app, &leaf).await["parent_id"], Value::Null);
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
@@ -678,23 +578,6 @@ mod tests {
 
         assert_eq!(v4, StatusCode::CREATED);
         assert_eq!(v6, StatusCode::CREATED);
-    }
-
-    #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn larger_subnet_after_a_smaller_one_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
-        create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
-
-        let (status, body) =
-            create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Supernet" })).await;
-
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("contains the existing subnet 10.0.0.0/16 (Datacenter)")
-        );
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
@@ -719,21 +602,98 @@ mod tests {
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
-    async fn concurrent_overlapping_creates_admit_exactly_one(pool: PgPool) {
+    async fn parent_id_is_not_accepted(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, _) = create(
+            &app,
+            json!({
+                "cidr": "10.6.0.0/24",
+                "name": "Chosen parent",
+                "parent_id": "00000000-0000-0000-0000-000000000000"
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_subnet_inside_an_existing_one_becomes_its_child(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, datacenter) =
+            create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
+
+        let (status, body) = create(&app, json!({ "cidr": "10.0.5.0/24", "name": "Inside" })).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["parent_id"], datacenter["id"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_subnet_is_placed_under_the_smallest_containing_subnet(pool: PgPool) {
+        let app = crate::app(pool);
+        create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Root" })).await;
+        let (_, child) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Child" })).await;
+
+        let (status, body) = create(&app, json!({ "cidr": "10.0.1.128/25", "name": "Half" })).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["parent_id"], child["id"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_larger_subnet_adopts_existing_subnets_inside_it(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, first) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "First" })).await;
+        let (_, second) = create(&app, json!({ "cidr": "10.1.0.0/16", "name": "Second" })).await;
+        let (_, outside) = create(&app, json!({ "cidr": "192.168.0.0/24", "name": "Lab" })).await;
+
+        let (status, supernet) =
+            create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Supernet" })).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(supernet["parent_id"], Value::Null);
+        assert_eq!(get(&app, &first).await["parent_id"], supernet["id"]);
+        assert_eq!(get(&app, &second).await["parent_id"], supernet["id"]);
+        assert_eq!(get(&app, &outside).await["parent_id"], Value::Null);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_middle_subnet_is_placed_between_parent_and_child(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, root) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Root" })).await;
+        let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
+        assert_eq!(leaf["parent_id"], root["id"]);
+
+        let (status, middle) =
+            create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(middle["parent_id"], root["id"]);
+        assert_eq!(get(&app, &leaf).await["parent_id"], middle["id"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn concurrent_nested_creates_are_placed_consistently(pool: PgPool) {
         let app = crate::app(pool);
 
         for round in 0..20 {
             let larger = format!("10.{round}.0.0/16");
             let smaller = format!("10.{round}.0.0/17");
 
-            let (first, second) = tokio::join!(
+            let ((first_status, first), (second_status, second)) = tokio::join!(
                 create(&app, json!({ "cidr": larger, "name": "Larger" })),
                 create(&app, json!({ "cidr": smaller, "name": "Smaller" })),
             );
 
-            let mut statuses = [first.0.as_u16(), second.0.as_u16()];
-            statuses.sort();
-            assert_eq!(statuses, [201, 409], "round {round}");
+            assert_eq!(first_status, StatusCode::CREATED, "round {round}");
+            assert_eq!(second_status, StatusCode::CREATED, "round {round}");
+            assert_eq!(
+                get(&app, &second).await["parent_id"],
+                first["id"],
+                "round {round}"
+            );
         }
     }
 

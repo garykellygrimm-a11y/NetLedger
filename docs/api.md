@@ -43,7 +43,7 @@ Monitoring should restart the process only when `/health` fails. When only `/hea
 | `name` | string | Display name |
 | `description` | string | Free text. Empty string when not set. |
 | `vlan_id` | integer or null | 802.1Q VLAN ID, 1 through 4094 |
-| `parent_id` | string (UUID) or null | Containing subnet, if any |
+| `parent_id` | string (UUID) or null | The smallest other subnet that contains this one, or null for a top-level subnet. Set by the server; see [`POST /api/subnets`](#post-apisubnets). |
 | `created_at` | string | RFC 3339 timestamp, UTC |
 | `updated_at` | string | RFC 3339 timestamp, UTC |
 
@@ -70,50 +70,47 @@ Creates a subnet. The request body must be a JSON object sent with `Content-Type
   "cidr": "10.0.1.0/24",
   "name": "Servers",
   "description": "Rack 4 application servers",
-  "vlan_id": 100,
-  "parent_id": null
+  "vlan_id": 100
 }
 ```
 
 | Field | Type | Required | Rules |
 | --- | --- | --- | --- |
-| `cidr` | string | Yes | An IPv4 or IPv6 network in CIDR notation. Host bits must be zero: `10.0.1.0/24` is accepted, `10.0.1.5/24` is rejected. Must not match the `cidr` of an existing subnet. Must also satisfy the hierarchy rules below. |
+| `cidr` | string | Yes | An IPv4 or IPv6 network in CIDR notation. Host bits must be zero: `10.0.1.0/24` is accepted, `10.0.1.5/24` is rejected. Must not match the `cidr` of an existing subnet. |
 | `name` | string | Yes | Leading and trailing whitespace is removed before validation and storage. After trimming, must be 1 to 100 characters. |
 | `description` | string | No | At most 1000 characters. Stored as sent, without trimming. Defaults to an empty string. |
 | `vlan_id` | integer or null | No | 1 through 4094. Defaults to null. |
-| `parent_id` | string (UUID) or null | No | The ID of an existing subnet. Defaults to null. |
 
-Character limits count Unicode characters, not bytes. Fields not listed above are rejected.
+Character limits count Unicode characters, not bytes. Fields not listed above are rejected with `422`, including `parent_id`.
 
-Every subnet must also follow two hierarchy rules:
+The server chooses the parent. It places the new subnet in the hierarchy in two steps:
 
-- Containment: a subnet with a `parent_id` must lie inside the parent's network and be smaller than it. `10.0.1.0/24` can be a child of `10.0.0.0/16`; `192.168.50.0/24` and `10.0.0.0/16` itself cannot.
-- Overlap: subnets with the same parent must not overlap. Top-level subnets, those with a null `parent_id`, count as one level, so two top-level subnets must not overlap either.
+1. The new subnet's parent is the smallest existing subnet that contains it. If no subnet contains it, it is created at the top level, with a null `parent_id`.
+2. Existing subnets at that same level that lie inside the new subnet become its children. Subnets further down keep their parents.
 
-Two CIDR networks can never partly overlap. Either they share no addresses, or one contains the other, or they are the same network. An overlap at the same level is therefore always one of three cases, each with its own message:
+Subnets can therefore be created in any order. For example, with top-level subnets `10.0.1.0/24` and `10.0.2.0/24`, creating `10.0.0.0/16` makes it their parent. Creating `10.0.0.0/8` afterwards makes it the parent of `10.0.0.0/16`, while `10.0.1.0/24` and `10.0.2.0/24` stay under `10.0.0.0/16`. Creating `10.0.3.0/24` then places it under `10.0.0.0/16`.
 
-- The new `cidr` is the same network as an existing subnet.
-- The new `cidr` is inside an existing subnet. With `10.0.0.0/16` at the top level, a second top-level `10.0.5.0/24` is rejected; create it with `10.0.0.0/16` as its parent instead.
-- The new `cidr` contains an existing subnet. With `10.0.0.0/16` at the top level, a top-level `10.0.0.0/8` is rejected. Subnets cannot be moved to a new parent, so create larger subnets before the subnets inside them.
+The response shows the new subnet's `parent_id`. It does not include the subnets that were moved under it. Their `parent_id` changes and their `updated_at` is set to the current time; fetch them again, for example with `GET /api/subnets`, to see the new hierarchy.
 
-IPv4 and IPv6 networks never overlap each other. An IPv6 subnet cannot be a child of an IPv4 subnet, or the reverse, because it is not inside the parent's network.
+IPv4 and IPv6 networks never contain each other, so an IPv6 subnet is never placed under an IPv4 subnet, or the reverse.
+
+The resulting hierarchy always follows two rules, which the database also enforces:
+
+- Containment: a subnet with a `parent_id` lies inside the parent's network and is smaller than it.
+- Overlap: subnets with the same parent do not overlap. Top-level subnets, those with a null `parent_id`, count as one level, so two top-level subnets do not overlap either.
+
+Creates and deletes are processed one at a time, so two requests that arrive at the same moment cannot place subnets inconsistently. If two requests send the same `cidr`, one of them receives `409 Conflict`.
 
 Checks run in this order, and only the first failure is reported:
 
 1. The field rules in the table, in the order `cidr`, `name`, `description`, `vlan_id`.
-2. If `parent_id` is set, the parent must exist, and then the containment rule is checked against it.
-3. The overlap rule is checked against the other subnets at the same level. If the new `cidr` contains more than one of them, the message names only one.
-4. The row is inserted.
-
-A child with the same network as its parent fails at step 2 with `400`, not with the duplicate `cidr` message.
-
-The database enforces the same rules with a trigger and constraints. Two requests that arrive at the same moment can both pass steps 2 and 3, for example two overlapping top-level subnets. The database then rejects one of them at step 4 with `409 Conflict` and a generic message: `cidr overlaps another subnet at the same level`, or `a subnet with this cidr already exists` if the two networks are the same. Depending on timing, the database may instead detect that the two requests are waiting on each other and abort one of them. That request also receives `409 Conflict`, with `cidr conflicts with another subnet being created at the same time; retry the request`. If the parent is deleted between step 2 and step 4, the response is `400` with `parent_id does not refer to an existing subnet`. The generic `400` message `cidr must be inside the parent subnet's network` comes from the database's containment trigger. The API never changes a subnet's `cidr`, so this message should appear only if the database is modified outside the API between step 2 and step 4.
+2. The `cidr` must not match an existing subnet.
 
 - `201 Created` with the new subnet object
-- `400 Bad Request` if a field rule fails, `parent_id` does not exist, the `cidr` is not inside the parent's network, or the body is not valid JSON
-- `409 Conflict` if the `cidr` overlaps another subnet at the same level, including the same network
+- `400 Bad Request` if a field rule fails or the body is not valid JSON
+- `409 Conflict` if a subnet with the same `cidr` already exists
 - `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
-- `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a required field is missing, a field has the wrong type or an unparseable value, or an unknown field is present
+- `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a required field is missing, a field has the wrong type or an unparseable value, or an unknown field such as `parent_id` is present
 
 Validation messages returned in `error`:
 
@@ -124,22 +121,7 @@ Validation messages returned in `error`:
 | `name` is too long | `name must be at most 100 characters` |
 | `description` is too long | `description must be at most 1000 characters` |
 | `vlan_id` is out of range | `vlan_id must be between 1 and 4094` |
-| `parent_id` does not exist | `parent_id does not refer to an existing subnet` |
-| `cidr` is not inside the parent's network | `cidr <cidr> is not inside the parent subnet <parent cidr> (<parent name>)` |
-| `cidr` is the same network as a subnet at the same level | `a subnet with this cidr already exists` |
-| `cidr` is inside a subnet at the same level | `cidr <cidr> is inside the existing subnet <existing cidr> (<existing name>); choose it as the parent` |
-| `cidr` contains a subnet at the same level | `cidr <cidr> contains the existing subnet <existing cidr> (<existing name>) at the same level; create larger subnets before the subnets inside them` |
-| Containment rejected by the database (see above) | `cidr must be inside the parent subnet's network` |
-| Overlap rejected by the database for simultaneous requests | `cidr overlaps another subnet at the same level` |
-| Simultaneous overlapping requests aborted by the database | `cidr conflicts with another subnet being created at the same time; retry the request` |
-
-Placeholders in angle brackets are filled in from the request and the existing subnet. For example, with a top-level subnet `10.0.0.0/16` named `Datacenter`, a top-level `10.0.5.0/24` returns:
-
-```json
-{ "error": "cidr 10.0.5.0/24 is inside the existing subnet 10.0.0.0/16 (Datacenter); choose it as the parent" }
-```
-
-A child `192.168.50.0/24` of the subnet `10.0.0.0/16` named `Parent` returns `400` with `cidr 192.168.50.0/24 is not inside the parent subnet 10.0.0.0/16 (Parent)`.
+| `cidr` is the same network as an existing subnet | `a subnet with this cidr already exists` |
 
 ### `PATCH /api/subnets/{id}`
 
@@ -177,7 +159,7 @@ Response, `200 OK`:
 
 All fields are optional, but the request must include at least one of them; an empty object `{}` is rejected. A field sent with its current value counts as a change. Character limits count Unicode characters, not bytes.
 
-`cidr` and `parent_id` cannot be changed yet. Sending either of them, or any other field not listed above, is rejected with `422`. Because `cidr` and `parent_id` never change, the hierarchy rules described under `POST /api/subnets` are not checked again.
+`cidr` and `parent_id` cannot be changed through this endpoint. Sending either of them, or any other field not listed above, is rejected with `422`. The server sets `parent_id` when subnets are created and deleted; see [`POST /api/subnets`](#post-apisubnets) and [`DELETE /api/subnets/{id}`](#delete-apisubnetsid). Because this endpoint never changes `cidr` or `parent_id`, the hierarchy is not checked again.
 
 Every successful request sets `updated_at` to the current time. `created_at` never changes.
 
@@ -211,11 +193,12 @@ Validation messages returned in `error`:
 
 ### `DELETE /api/subnets/{id}`
 
-Deletes one subnet. A subnet that is the parent of other subnets cannot be deleted; delete its child subnets first. Deletion does not cascade.
+Deletes one subnet. Its child subnets are not deleted; they move up to the deleted subnet's parent, or to the top level if the deleted subnet had no parent. Their `updated_at` is set to the current time. Subnets further down keep their parents.
+
+For example, with `10.0.0.0/8` containing `10.0.0.0/16`, which contains `10.0.1.0/24`, deleting `10.0.0.0/16` makes `10.0.0.0/8` the parent of `10.0.1.0/24`.
 
 - `204 No Content` with no response body
 - `404 Not Found` if no subnet has that ID
-- `409 Conflict` if the subnet has child subnets
 - `400 Bad Request` if `id` is not a valid UUID
 
 Error messages returned in `error`:
@@ -223,7 +206,6 @@ Error messages returned in `error`:
 | Condition | `error` |
 | --- | --- |
 | No subnet has that ID | `not found` |
-| The subnet has child subnets | `subnet has child subnets; delete them first` |
 
 ## Web UI
 
