@@ -134,6 +134,14 @@ td.actions {
   white-space: nowrap;
 }
 
+td.cidr-cell {
+  white-space: nowrap;
+}
+
+.tree-marker {
+  color: var(--muted);
+}
+
 tbody tr:nth-child(even) {
   background: var(--row-alt);
 }
