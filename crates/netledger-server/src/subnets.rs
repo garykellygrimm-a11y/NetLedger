@@ -1,7 +1,7 @@
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use chrono::{DateTime, Utc};
 use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -48,36 +48,103 @@ impl CreateSubnet {
             )));
         }
 
-        let name_len = self.name.trim().chars().count();
-        if name_len == 0 {
-            return Err(AppError::BadRequest("name must not be empty".to_string()));
-        }
-        if name_len > NAME_MAX_CHARS {
-            return Err(AppError::BadRequest(format!(
-                "name must be at most {NAME_MAX_CHARS} characters"
-            )));
-        }
+        validate_name(&self.name)?;
+        validate_description(&self.description)?;
+        validate_vlan_id(self.vlan_id)
+    }
+}
 
-        if self.description.chars().count() > DESCRIPTION_MAX_CHARS {
-            return Err(AppError::BadRequest(format!(
-                "description must be at most {DESCRIPTION_MAX_CHARS} characters"
-            )));
-        }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSubnet {
+    #[serde(default, deserialize_with = "present")]
+    pub name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub vlan_id: Option<Option<i32>>,
+}
 
-        if self.vlan_id.is_some_and(|vlan| !(1..=4094).contains(&vlan)) {
+impl UpdateSubnet {
+    fn validate(&self) -> Result<(), AppError> {
+        if self.name.is_none() && self.description.is_none() && self.vlan_id.is_none() {
             return Err(AppError::BadRequest(
-                "vlan_id must be between 1 and 4094".to_string(),
+                "request must change at least one field".to_string(),
             ));
+        }
+
+        match &self.name {
+            Some(None) => {
+                return Err(AppError::BadRequest("name must not be null".to_string()));
+            }
+            Some(Some(name)) => validate_name(name)?,
+            None => {}
+        }
+
+        match &self.description {
+            Some(None) => {
+                return Err(AppError::BadRequest(
+                    "description must not be null; send an empty string to clear it".to_string(),
+                ));
+            }
+            Some(Some(description)) => validate_description(description)?,
+            None => {}
+        }
+
+        if let Some(vlan_id) = self.vlan_id {
+            validate_vlan_id(vlan_id)?;
         }
 
         Ok(())
     }
 }
 
+fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+fn validate_name(name: &str) -> Result<(), AppError> {
+    let name_len = name.trim().chars().count();
+    if name_len == 0 {
+        return Err(AppError::BadRequest("name must not be empty".to_string()));
+    }
+    if name_len > NAME_MAX_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "name must be at most {NAME_MAX_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_description(description: &str) -> Result<(), AppError> {
+    if description.chars().count() > DESCRIPTION_MAX_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "description must be at most {DESCRIPTION_MAX_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_vlan_id(vlan_id: Option<i32>) -> Result<(), AppError> {
+    if vlan_id.is_some_and(|vlan| !(1..=4094).contains(&vlan)) {
+        return Err(AppError::BadRequest(
+            "vlan_id must be between 1 and 4094".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/subnets", get(list_subnets).post(create_subnet))
-        .route("/subnets/{id}", get(get_subnet).delete(delete_subnet))
+        .route(
+            "/subnets/{id}",
+            get(get_subnet).patch(update_subnet).delete(delete_subnet),
+        )
 }
 
 async fn list_subnets(State(state): State<AppState>) -> Result<Json<Vec<Subnet>>, AppError> {
@@ -198,6 +265,42 @@ async fn check_placement(db: &PgPool, input: &CreateSubnet) -> Result<(), AppErr
     }
 
     Ok(())
+}
+
+async fn update_subnet(
+    State(state): State<AppState>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(input): AppJson<UpdateSubnet>,
+) -> Result<Json<Subnet>, AppError> {
+    input.validate()?;
+
+    let name = input.name.flatten().map(|name| name.trim().to_string());
+    let description = input.description.flatten();
+    let set_vlan_id = input.vlan_id.is_some();
+    let vlan_id = input.vlan_id.flatten();
+
+    let subnet = sqlx::query_as!(
+        Subnet,
+        r#"
+        UPDATE subnet
+        SET name = COALESCE($2, name),
+            description = COALESCE($3, description),
+            vlan_id = CASE WHEN $4::boolean THEN $5::integer ELSE vlan_id END,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING id, cidr AS "cidr: IpNet", name, description, vlan_id, parent_id, created_at, updated_at
+        "#,
+        id,
+        name,
+        description,
+        set_vlan_id,
+        vlan_id,
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    Ok(Json(subnet))
 }
 
 async fn delete_subnet(
@@ -632,5 +735,119 @@ mod tests {
             statuses.sort();
             assert_eq!(statuses, [201, 409], "round {round}");
         }
+    }
+
+    async fn patch(app: &Router, id: &str, body: Value) -> (StatusCode, Value) {
+        send(app, "PATCH", &format!("/api/subnets/{id}"), Some(body)).await
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_updates_only_the_fields_sent(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(
+            &app,
+            json!({
+                "cidr": "10.8.0.0/24",
+                "name": "Old name",
+                "description": "Keep me",
+                "vlan_id": 100
+            }),
+        )
+        .await;
+
+        let (status, body) = patch(
+            &app,
+            created["id"].as_str().unwrap(),
+            json!({ "name": "  New name  " }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["name"], "New name");
+        assert_eq!(body["description"], "Keep me");
+        assert_eq!(body["vlan_id"], 100);
+        assert_eq!(body["cidr"], "10.8.0.0/24");
+        assert_ne!(body["updated_at"], created["updated_at"]);
+        assert_eq!(body["created_at"], created["created_at"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_with_null_vlan_id_clears_it(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(
+            &app,
+            json!({ "cidr": "10.8.0.0/24", "name": "Voice", "vlan_id": 100 }),
+        )
+        .await;
+
+        let (status, body) = patch(
+            &app,
+            created["id"].as_str().unwrap(),
+            json!({ "vlan_id": null }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["vlan_id"], Value::Null);
+        assert_eq!(body["name"], "Voice");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_with_no_fields_returns_400(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
+
+        let (status, body) = patch(&app, created["id"].as_str().unwrap(), json!({})).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "request must change at least one field");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_rejects_invalid_values(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
+        let id = created["id"].as_str().unwrap();
+
+        let (status, body) = patch(&app, id, json!({ "name": "   " })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "name must not be empty");
+
+        let (status, body) = patch(&app, id, json!({ "name": null })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "name must not be null");
+
+        let (status, _) = patch(&app, id, json!({ "vlan_id": 5000 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_unknown_subnet_returns_404(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let (status, body) = patch(
+            &app,
+            "00000000-0000-0000-0000-000000000000",
+            json!({ "name": "Nobody" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "not found");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn patch_cannot_change_cidr_yet(pool: PgPool) {
+        let app = crate::app(pool);
+        let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
+
+        let (status, _) = patch(
+            &app,
+            created["id"].as_str().unwrap(),
+            json!({ "cidr": "10.9.0.0/24" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
