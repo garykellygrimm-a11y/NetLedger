@@ -666,7 +666,8 @@ mod tests {
         let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
         assert_eq!(leaf["parent_id"], root["id"]);
 
-        let (status, middle) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
+        let (status, middle) =
+            create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(middle["parent_id"], root["id"]);
