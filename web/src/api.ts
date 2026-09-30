@@ -1,4 +1,4 @@
-import type { CreateSubnetInput, Subnet } from './types.ts'
+import type { CreateSubnetInput, Subnet, UpdateSubnetInput } from './types.ts'
 
 const UNAVAILABLE_STATUSES = new Set([502, 503, 504])
 
@@ -47,6 +47,14 @@ export function listSubnets(signal?: AbortSignal): Promise<Subnet[]> {
 export function createSubnet(input: CreateSubnetInput): Promise<Subnet> {
   return request<Subnet>('/subnets', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateSubnet(id: string, input: UpdateSubnetInput): Promise<Subnet> {
+  return request<Subnet>(`/subnets/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })

@@ -15,3 +15,9 @@ export type CreateSubnetInput = {
     description: string
     vlan_id: number | null
 }
+
+export type UpdateSubnetInput = {
+    name?: string
+    description?: string
+    vlan_id?: number | null
+}

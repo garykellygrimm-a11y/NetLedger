@@ -110,6 +110,14 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.secondary {
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.875rem;
+}
+
 button.danger {
   padding: 0.3rem 0.8rem;
   background: var(--danger);
@@ -132,6 +140,19 @@ td {
 td.actions {
   text-align: right;
   white-space: nowrap;
+}
+
+td.actions button + button {
+  margin-left: 0.4rem;
+}
+
+td input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+tr.editing {
+  background: var(--panel);
 }
 
 td.cidr-cell {

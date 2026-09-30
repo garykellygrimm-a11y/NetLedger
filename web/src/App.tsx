@@ -93,7 +93,15 @@ function App() {
           </p>
         )}
         {state.status === 'loaded' && (
-          <SubnetTable subnets={state.subnets} deletingId={deletingId} onDelete={handleDelete} />
+          <SubnetTable
+            subnets={state.subnets}
+            deletingId={deletingId}
+            onDelete={handleDelete}
+            onUpdated={() => {
+              setAction({ status: 'idle' })
+              refresh()
+            }}
+          />
         )}
       </section>
     </main>
