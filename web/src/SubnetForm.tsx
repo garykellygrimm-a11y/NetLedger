@@ -1,10 +1,8 @@
 import { useState } from 'react'
 import type { SubmitEvent } from 'react'
 import { ApiError, createSubnet } from './api.ts'
-import type { Subnet } from './types.ts'
 
 type Props = {
-  subnets: Subnet[]
   onCreated: () => void
 }
 
@@ -13,12 +11,11 @@ type SubmitState =
   | { status: 'submitting' }
   | { status: 'error'; message: string }
 
-export function SubnetForm({ subnets, onCreated }: Props) {
+export function SubnetForm({ onCreated }: Props) {
   const [cidr, setCidr] = useState('')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [vlan, setVlan] = useState('')
-  const [parentId, setParentId] = useState('')
   const [submit, setSubmit] = useState<SubmitState>({ status: 'idle' })
 
   async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
@@ -31,7 +28,6 @@ export function SubnetForm({ subnets, onCreated }: Props) {
         name,
         description,
         vlan_id: vlan === '' ? null : Number(vlan),
-        parent_id: parentId === '' ? null : parentId,
       })
     } catch (error: unknown) {
       const message =
@@ -44,7 +40,6 @@ export function SubnetForm({ subnets, onCreated }: Props) {
     setName('')
     setDescription('')
     setVlan('')
-    setParentId('')
     setSubmit({ status: 'idle' })
     onCreated()
   }
@@ -91,22 +86,6 @@ export function SubnetForm({ subnets, onCreated }: Props) {
           max={4094}
           step={1}
         />
-      </div>
-
-      <div className="field">
-        <label htmlFor="subnet-parent">Parent (optional)</label>
-        <select
-          id="subnet-parent"
-          value={parentId}
-          onChange={(event) => setParentId(event.target.value)}
-        >
-          <option value="">None</option>
-          {subnets.map((subnet) => (
-            <option key={subnet.id} value={subnet.id}>
-              {subnet.cidr} ({subnet.name})
-            </option>
-          ))}
-        </select>
       </div>
 
       <div className="field field-wide">

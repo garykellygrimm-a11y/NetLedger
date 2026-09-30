@@ -63,7 +63,6 @@ function App() {
     refresh()
   }
 
-  const subnets = state.status === 'loaded' ? state.subnets : []
   const deletingId = action.status === 'deleting' ? action.id : null
 
   return (
@@ -74,7 +73,6 @@ function App() {
       </header>
 
       <SubnetForm
-        subnets={subnets}
         onCreated={() => {
           setAction({ status: 'idle' })
           refresh()
