@@ -11,7 +11,7 @@ use crate::{
 };
 
 const DEADLOCK_DETECTED: &str = "40P01";
-const PLACEMENT_LOCK_KEY: i64 = 0x4e45_544c_4544_4752;
+pub(crate) const PLACEMENT_LOCK_KEY: i64 = 0x4e45_544c_4544_4752;
 const NAME_MAX_CHARS: usize = 100;
 const DESCRIPTION_MAX_CHARS: usize = 1000;
 

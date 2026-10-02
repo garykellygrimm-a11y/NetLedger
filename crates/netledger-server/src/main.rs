@@ -1,7 +1,10 @@
+mod addresses;
 mod config;
 mod error;
 mod extractors;
 mod subnets;
+#[cfg(test)]
+mod test_support;
 mod web;
 
 use std::time::Duration;
@@ -24,7 +27,12 @@ fn app(db: PgPool) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
-        .nest("/api", subnets::router().fallback(api_not_found))
+        .nest(
+            "/api",
+            subnets::router()
+                .merge(addresses::router())
+                .fallback(api_not_found),
+        )
         .fallback(web::serve)
         .with_state(AppState { db });
 
