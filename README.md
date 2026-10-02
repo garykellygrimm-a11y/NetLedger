@@ -37,6 +37,7 @@ cargo run -p netledger-server
 - [docs/configuration.md](docs/configuration.md): environment variables
 - [docs/api.md](docs/api.md): HTTP endpoints, error format, web UI routing, and security headers
 - [docs/adr/](docs/adr/): architecture decision records
+- [docs/roadmap.md](docs/roadmap.md): planned work through 1.0 and beyond
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities
 - [CHANGELOG.md](CHANGELOG.md): changes in each release
 
@@ -51,31 +52,7 @@ cargo run -p netledger-server
 
 ## Roadmap
 
-### Built
-
-- Server with embedded migrations, liveness and readiness checks
-- Subnet API: `GET /api/subnets`, `GET /api/subnets/{id}`, `POST /api/subnets` with validation, `PATCH /api/subnets/{id}` for name, description, and VLAN, and `DELETE /api/subnets/{id}`
-- Subnet containment and overlap rules, enforced by the database
-- Automatic subnet placement: each new subnet goes under the smallest subnet that contains it, and existing subnets inside it move under it, so subnets can be created in any order; deleting a subnet moves its children to its parent
-- Address API: `POST /api/addresses`, `GET /api/addresses/{id}`, `GET /api/subnets/{id}/addresses`, and `DELETE /api/addresses/{id}`
-- Automatic address placement: each address goes in the most specific subnet that contains it, and addresses move when subnets are created or deleted
-- Next free address allocation: `POST /api/subnets/{id}/addresses/allocate`
-- JSON error responses
-- Web UI served by the server and embedded in release builds, with security headers on every response
-- Web UI: subnet list shown as an indented tree
-- Create subnets from the web UI
-- Edit a subnet's name, VLAN, and description in place from the web UI
-- Delete subnets from the web UI, with confirmation
-- Web UI for addresses: list a subnet's addresses, record an address, allocate the next free address, and delete addresses
-- Automated API tests
-- CI with formatting, linting, build, and test checks for the server and linting and build checks for the web UI; Dependabot; CodeQL
-
-### Planned
-
-- Network discovery
-- Authentication
-- Changing a subnet's CIDR through the API and the web UI
-- Installers and deployment guidance for Windows and RHEL
+Authentication, network discovery, and a design pass are next. See [docs/roadmap.md](docs/roadmap.md) for the full plan through 1.0 and beyond.
 
 ## License
 
