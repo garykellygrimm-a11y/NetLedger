@@ -6,11 +6,20 @@ import type { Subnet } from './types.ts'
 type Props = {
   subnets: Subnet[]
   deletingId: string | null
+  selectedId: string | null
+  onSelect: (subnet: Subnet) => void
   onDelete: (subnet: Subnet) => void
   onUpdated: () => void
 }
 
-export function SubnetTable({ subnets, deletingId, onDelete, onUpdated }: Props) {
+export function SubnetTable({
+  subnets,
+  deletingId,
+  selectedId,
+  onSelect,
+  onDelete,
+  onUpdated,
+}: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
 
   if (subnets.length === 0) {
@@ -47,14 +56,22 @@ export function SubnetTable({ subnets, deletingId, onDelete, onUpdated }: Props)
               }}
             />
           ) : (
-            <tr key={subnet.id}>
+            <tr key={subnet.id} className={subnet.id === selectedId ? 'selected' : undefined}>
               <td className="mono cidr-cell" style={{ paddingLeft: `${0.75 + depth * 1.5}rem` }}>
                 {depth > 0 && (
                   <span className="tree-marker" aria-hidden="true">
                     └{' '}
                   </span>
                 )}
-                {subnet.cidr}
+                <button
+                  type="button"
+                  className="link mono"
+                  onClick={() => onSelect(subnet)}
+                  aria-pressed={subnet.id === selectedId}
+                  aria-label={`Show addresses in ${subnet.cidr}`}
+                >
+                  {subnet.cidr}
+                </button>
                 {parent && <span className="visually-hidden"> (inside {parent.cidr})</span>}
               </td>
               <td>{subnet.name}</td>
