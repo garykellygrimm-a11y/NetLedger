@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE address\n            SET subnet_id = $1, updated_at = now()\n            WHERE subnet_id = $2\n              AND address <<= $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c910ebb8cc6a51565ee752fb5d307f66d34c181e080414d6e4b4191797016df4"
+}

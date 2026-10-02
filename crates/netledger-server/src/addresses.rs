@@ -89,7 +89,7 @@ pub fn router() -> Router<AppState> {
         .route("/subnets/{id}/addresses/allocate", post(allocate_address))
 }
 
-fn is_reserved_in(subnet: IpNet, address: IpAddr) -> bool {
+pub(crate) fn is_reserved_in(subnet: IpNet, address: IpAddr) -> bool {
     match subnet {
         IpNet::V4(net) if net.prefix_len() < 31 => {
             address == IpAddr::V4(net.network()) || address == IpAddr::V4(net.broadcast())
@@ -616,5 +616,77 @@ mod tests {
         let (status, _) = allocate(&app, &missing).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    async fn get_address(app: &Router, address: &Value) -> Value {
+        let uri = format!("/api/addresses/{}", address["id"].as_str().unwrap());
+        send(app, "GET", &uri, None).await.1
+    }
+
+    async fn delete_subnet(app: &Router, subnet: &Value) -> (StatusCode, Value) {
+        let uri = format!("/api/subnets/{}", subnet["id"].as_str().unwrap());
+        send(app, "DELETE", &uri, None).await
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_new_subnet_adopts_addresses_inside_it(pool: PgPool) {
+        let app = crate::app(pool);
+        create_subnet(&app, "10.0.0.0/16").await;
+        let (_, inside) = create_address(&app, json!({ "address": "10.0.1.5" })).await;
+        let (_, outside) = create_address(&app, json!({ "address": "10.0.2.5" })).await;
+
+        let servers = create_subnet(&app, "10.0.1.0/24").await;
+
+        assert_eq!(get_address(&app, &inside).await["subnet_id"], servers["id"]);
+        assert_ne!(
+            get_address(&app, &outside).await["subnet_id"],
+            servers["id"]
+        );
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_subnet_that_would_reserve_a_recorded_address_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        create_subnet(&app, "10.0.0.0/16").await;
+        create_address(&app, json!({ "address": "10.0.1.0" })).await;
+
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/api/subnets",
+            Some(json!({ "cidr": "10.0.1.0/24", "name": "Servers" })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("10.0.1.0"));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn deleting_a_subnet_moves_its_addresses_to_its_parent(pool: PgPool) {
+        let app = crate::app(pool);
+        let datacenter = create_subnet(&app, "10.0.0.0/16").await;
+        let servers = create_subnet(&app, "10.0.1.0/24").await;
+        let (_, address) = create_address(&app, json!({ "address": "10.0.1.5" })).await;
+        assert_eq!(address["subnet_id"], servers["id"]);
+
+        let (status, _) = delete_subnet(&app, &servers).await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            get_address(&app, &address).await["subnet_id"],
+            datacenter["id"]
+        );
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn deleting_a_top_level_subnet_with_addresses_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/24").await;
+        create_address(&app, json!({ "address": "10.0.1.5" })).await;
+
+        let (status, _) = delete_subnet(&app, &subnet).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 }

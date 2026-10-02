@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE address SET subnet_id = $2, updated_at = now() WHERE subnet_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2b9da3654cbcb3d8dc91bc4ec5d0b8b098f61a592f8535b814c949bbd26e5135"
+}
