@@ -1,4 +1,11 @@
-import type { CreateSubnetInput, Subnet, UpdateSubnetInput } from './types.ts'
+import type {
+  Address,
+  AllocateAddressInput,
+  CreateAddressInput,
+  CreateSubnetInput,
+  Subnet,
+  UpdateSubnetInput,
+} from './types.ts'
 
 const UNAVAILABLE_STATUSES = new Set([502, 503, 504])
 
@@ -62,4 +69,28 @@ export function updateSubnet(id: string, input: UpdateSubnetInput): Promise<Subn
 
 export function deleteSubnet(id: string): Promise<void> {
   return request<void>(`/subnets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function listSubnetAddresses(subnetId: string, signal?: AbortSignal): Promise<Address[]> {
+  return request<Address[]>(`/subnets/${encodeURIComponent(subnetId)}/addresses`, { signal })
+}
+
+export function createAddress(input: CreateAddressInput): Promise<Address> {
+  return request<Address>('/addresses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function allocateAddress(subnetId: string, input: AllocateAddressInput): Promise<Address> {
+  return request<Address>(`/subnets/${encodeURIComponent(subnetId)}/addresses/allocate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteAddress(id: string): Promise<void> {
+  return request<void>(`/addresses/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

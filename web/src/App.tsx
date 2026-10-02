@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AddressPanel } from './AddressPanel.tsx'
 import { ApiError, deleteSubnet, listSubnets } from './api.ts'
 import { SubnetForm } from './SubnetForm.tsx'
 import { SubnetTable } from './SubnetTable.tsx'
@@ -18,6 +19,7 @@ function App() {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [action, setAction] = useState<ActionState>({ status: 'idle' })
   const [refreshKey, setRefreshKey] = useState(0)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -59,10 +61,15 @@ function App() {
       return
     }
 
+    if (subnet.id === selectedId) {
+      setSelectedId(null)
+    }
     setAction({ status: 'idle' })
     refresh()
   }
 
+  const subnets = state.status === 'loaded' ? state.subnets : []
+  const selected = subnets.find((subnet) => subnet.id === selectedId) ?? null
   const deletingId = action.status === 'deleting' ? action.id : null
 
   return (
@@ -96,6 +103,8 @@ function App() {
           <SubnetTable
             subnets={state.subnets}
             deletingId={deletingId}
+            selectedId={selectedId}
+            onSelect={(subnet) => setSelectedId(subnet.id)}
             onDelete={handleDelete}
             onUpdated={() => {
               setAction({ status: 'idle' })
@@ -104,6 +113,16 @@ function App() {
           />
         )}
       </section>
+
+      {selected && (
+        <AddressPanel
+          key={selected.id}
+          subnet={selected}
+          hasChildren={subnets.some((subnet) => subnet.parent_id === selected.id)}
+          version={refreshKey}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </main>
   )
 }
