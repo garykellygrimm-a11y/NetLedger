@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT cidr AS \"cidr: IpNet\" FROM subnet WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cidr: IpNet",
+        "type_info": "Cidr",
+        "origin": {
+          "Table": {
+            "table": "subnet",
+            "name": "cidr"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1d57d60ea79e41173598dea666e6ca7776875e9c46552593aa73d4c250e0f786"
+}

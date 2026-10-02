@@ -1,4 +1,7 @@
-use std::net::IpAddr;
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
 
 use axum::{
     Json, Router,
@@ -45,17 +48,36 @@ pub struct CreateAddress {
 
 impl CreateAddress {
     fn validate(&self) -> Result<(), AppError> {
-        if self.hostname.trim().chars().count() > HOSTNAME_MAX_CHARS {
-            return Err(AppError::BadRequest(format!(
-                "hostname must be at most {HOSTNAME_MAX_CHARS} characters"
-            )));
-        }
-        if self.description.chars().count() > DESCRIPTION_MAX_CHARS {
-            return Err(AppError::BadRequest(format!(
-                "description must be at most {DESCRIPTION_MAX_CHARS} characters"
-            )));
-        }
-        Ok(())
+        validate_details(&self.hostname, &self.description)
+    }
+}
+
+fn validate_details(hostname: &str, description: &str) -> Result<(), AppError> {
+    if hostname.trim().chars().count() > HOSTNAME_MAX_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "hostname must be at most {HOSTNAME_MAX_CHARS} characters"
+        )));
+    }
+    if description.chars().count() > DESCRIPTION_MAX_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "description must be at most {DESCRIPTION_MAX_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllocateAddress {
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+impl AllocateAddress {
+    fn validate(&self) -> Result<(), AppError> {
+        validate_details(&self.hostname, &self.description)
     }
 }
 
@@ -64,6 +86,7 @@ pub fn router() -> Router<AppState> {
         .route("/addresses", post(create_address))
         .route("/addresses/{id}", get(get_address).delete(delete_address))
         .route("/subnets/{id}/addresses", get(list_subnet_addresses))
+        .route("/subnets/{id}/addresses/allocate", post(allocate_address))
 }
 
 fn is_reserved_in(subnet: IpNet, address: IpAddr) -> bool {
@@ -125,6 +148,119 @@ async fn create_address(
         "#,
         host,
         subnet.id,
+        input.hostname.trim(),
+        input.description,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(map_address_error)?;
+
+    tx.commit().await?;
+
+    Ok((StatusCode::CREATED, Json(address)))
+}
+
+fn host_range(network: IpNet) -> (u128, u128) {
+    match network {
+        IpNet::V4(net) => {
+            let first = u128::from(u32::from(net.network()));
+            let last = u128::from(u32::from(net.broadcast()));
+            (first, last)
+        }
+        IpNet::V6(net) => (u128::from(net.network()), u128::from(net.broadcast())),
+    }
+}
+
+fn to_address(subnet: IpNet, value: u128) -> IpAddr {
+    match subnet {
+        IpNet::V4(_) => IpAddr::V4(Ipv4Addr::from(value as u32)),
+        IpNet::V6(_) => IpAddr::V6(Ipv6Addr::from(value)),
+    }
+}
+
+fn first_free_address(
+    subnet: IpNet,
+    children: &[IpNet],
+    taken: &HashSet<IpAddr>,
+) -> Option<IpAddr> {
+    let (network, last) = host_range(subnet);
+    let (mut candidate, last) = match subnet {
+        IpNet::V4(net) if net.prefix_len() >= 31 => (network, last),
+        IpNet::V4(_) => (network + 1, last - 1),
+        IpNet::V6(net) if net.prefix_len() == 128 => (network, last),
+        IpNet::V6(_) => (network + 1, last),
+    };
+
+    'search: while candidate <= last {
+        for child in children {
+            let (child_first, child_last) = host_range(*child);
+            if (child_first..=child_last).contains(&candidate) {
+                candidate = child_last.checked_add(1)?;
+                continue 'search;
+            }
+        }
+
+        let address = to_address(subnet, candidate);
+        if !taken.contains(&address) {
+            return Some(address);
+        }
+        candidate = candidate.checked_add(1)?;
+    }
+
+    None
+}
+
+async fn allocate_address(
+    State(state): State<AppState>,
+    AppPath(subnet_id): AppPath<Uuid>,
+    AppJson(input): AppJson<AllocateAddress>,
+) -> Result<(StatusCode, Json<Address>), AppError> {
+    input.validate()?;
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PLACEMENT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+
+    let subnet = sqlx::query_scalar!(
+        r#"SELECT cidr AS "cidr: IpNet" FROM subnet WHERE id = $1"#,
+        subnet_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let children = sqlx::query_scalar!(
+        r#"SELECT cidr AS "cidr: IpNet" FROM subnet WHERE parent_id = $1"#,
+        subnet_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let taken: HashSet<IpAddr> = sqlx::query_scalar!(
+        r#"SELECT address AS "address: IpAddr" FROM address WHERE subnet_id = $1"#,
+        subnet_id
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect();
+
+    let free = first_free_address(subnet, &children, &taken)
+        .ok_or_else(|| AppError::Conflict(format!("subnet {subnet} has no free addresses")))?;
+
+    let address = sqlx::query_as!(
+        Address,
+        r#"
+        INSERT INTO address (address, subnet_id, hostname, description, source)
+        VALUES ($1, $2, $3, $4, 'allocated')
+        RETURNING id, address AS "address: IpAddr", subnet_id, hostname, description, source,
+                  created_at, updated_at
+        "#,
+        IpNet::from(free),
+        subnet_id,
         input.hostname.trim(),
         input.description,
     )
@@ -379,5 +515,106 @@ mod tests {
             err.as_database_error().unwrap().constraint(),
             Some("address_within_subnet")
         );
+    }
+
+    async fn allocate(app: &Router, subnet: &Value) -> (StatusCode, Value) {
+        let uri = format!(
+            "/api/subnets/{}/addresses/allocate",
+            subnet["id"].as_str().unwrap()
+        );
+        send(app, "POST", &uri, Some(json!({}))).await
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn allocation_returns_the_first_usable_address(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/24").await;
+
+        let (status, body) = allocate(&app, &subnet).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["address"], "10.0.1.1");
+        assert_eq!(body["source"], "allocated");
+        assert_eq!(body["subnet_id"], subnet["id"]);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn allocation_skips_recorded_addresses(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/24").await;
+        create_address(&app, json!({ "address": "10.0.1.1" })).await;
+        create_address(&app, json!({ "address": "10.0.1.2" })).await;
+
+        let (_, body) = allocate(&app, &subnet).await;
+
+        assert_eq!(body["address"], "10.0.1.3");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn allocation_skips_addresses_inside_child_subnets(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/24").await;
+        create_subnet(&app, "10.0.1.0/26").await;
+
+        let (_, body) = allocate(&app, &subnet).await;
+
+        assert_eq!(body["address"], "10.0.1.64");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_full_subnet_returns_409(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/30").await;
+        allocate(&app, &subnet).await;
+        allocate(&app, &subnet).await;
+
+        let (status, body) = allocate(&app, &subnet).await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "subnet 10.0.1.0/30 has no free addresses");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn ipv6_allocation_starts_after_the_subnet_router_address(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "fd00:10::/64").await;
+
+        let (_, body) = allocate(&app, &subnet).await;
+
+        assert_eq!(body["address"], "fd00:10::1");
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn concurrent_allocations_never_return_the_same_address(pool: PgPool) {
+        let app = crate::app(pool);
+        let subnet = create_subnet(&app, "10.0.1.0/24").await;
+
+        let (a, b, c, d) = tokio::join!(
+            allocate(&app, &subnet),
+            allocate(&app, &subnet),
+            allocate(&app, &subnet),
+            allocate(&app, &subnet),
+        );
+
+        let mut addresses: Vec<String> = [a, b, c, d]
+            .into_iter()
+            .map(|(status, body)| {
+                assert_eq!(status, StatusCode::CREATED);
+                body["address"].as_str().unwrap().to_string()
+            })
+            .collect();
+        addresses.sort();
+        addresses.dedup();
+        assert_eq!(addresses.len(), 4);
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn allocating_from_an_unknown_subnet_returns_404(pool: PgPool) {
+        let app = crate::app(pool);
+        let missing = json!({ "id": "00000000-0000-0000-0000-000000000000" });
+
+        let (status, _) = allocate(&app, &missing).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
