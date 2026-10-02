@@ -1,6 +1,6 @@
 # HTTP API
 
-All endpoints are unauthenticated in the current version, including `POST /api/subnets`, `PATCH /api/subnets/{id}`, and `DELETE /api/subnets/{id}`, which write to the database. Anyone who can reach the server can create, change, and delete subnets. Requests and responses use JSON unless noted.
+All endpoints are unauthenticated in the current version, including `POST /api/subnets`, `PATCH /api/subnets/{id}`, `DELETE /api/subnets/{id}`, `POST /api/addresses`, `POST /api/subnets/{id}/addresses/allocate`, and `DELETE /api/addresses/{id}`, which write to the database. Anyone who can reach the server can create, change, and delete subnets and addresses. Requests and responses use JSON unless noted.
 
 ## Health
 
@@ -90,7 +90,9 @@ The server chooses the parent. It places the new subnet in the hierarchy in two 
 
 Subnets can therefore be created in any order. For example, with top-level subnets `10.0.1.0/24` and `10.0.2.0/24`, creating `10.0.0.0/16` makes it their parent. Creating `10.0.0.0/8` afterwards makes it the parent of `10.0.0.0/16`, while `10.0.1.0/24` and `10.0.2.0/24` stay under `10.0.0.0/16`. Creating `10.0.3.0/24` then places it under `10.0.0.0/16`.
 
-The response shows the new subnet's `parent_id`. It does not include the subnets that were moved under it. Their `parent_id` changes and their `updated_at` is set to the current time; fetch them again, for example with `GET /api/subnets`, to see the new hierarchy.
+Recorded addresses move in the same way. If the new subnet has a parent, addresses recorded in that parent that lie inside the new subnet move to the new subnet. Addresses recorded in other subnets, including the new subnet's children, keep their subnet. If a moved address would be the new subnet's network or broadcast address, which IPv4 subnets of /30 or shorter reserve, the subnet is not created and the request returns `409 Conflict`. For example, with the address `10.0.1.0` recorded in `10.0.0.0/16`, creating `10.0.1.0/24` is rejected because `10.0.1.0` would be its network address. See [Addresses](#addresses).
+
+The response shows the new subnet's `parent_id`. It does not include the subnets that were moved under it or the addresses that were moved into it. Their `parent_id` or `subnet_id` changes and their `updated_at` is set to the current time; fetch them again, for example with `GET /api/subnets` and [`GET /api/subnets/{id}/addresses`](#get-apisubnetsidaddresses), to see the result.
 
 IPv4 and IPv6 networks never contain each other, so an IPv6 subnet is never placed under an IPv4 subnet, or the reverse.
 
@@ -99,16 +101,17 @@ The resulting hierarchy always follows two rules, which the database also enforc
 - Containment: a subnet with a `parent_id` lies inside the parent's network and is smaller than it.
 - Overlap: subnets with the same parent do not overlap. Top-level subnets, those with a null `parent_id`, count as one level, so two top-level subnets do not overlap either.
 
-Creates and deletes are processed one at a time, so two requests that arrive at the same moment cannot place subnets inconsistently. If two requests send the same `cidr`, one of them receives `409 Conflict`.
+Creating and deleting subnets, recording addresses, and allocating addresses are serialized with a shared lock, so their placement decisions never interleave. Deleting an address and the other operations do not take that lock. They rely on the database's normal row-level locking, which is safe because they make no placement decisions. If two requests send the same `cidr`, one of them receives `409 Conflict`.
 
 Checks run in this order, and only the first failure is reported:
 
 1. The field rules in the table, in the order `cidr`, `name`, `description`, `vlan_id`.
 2. The `cidr` must not match an existing subnet.
+3. No recorded address that would move into the new subnet may be its network or broadcast address.
 
 - `201 Created` with the new subnet object
 - `400 Bad Request` if a field rule fails or the body is not valid JSON
-- `409 Conflict` if a subnet with the same `cidr` already exists
+- `409 Conflict` if a subnet with the same `cidr` already exists, or a recorded address would become the new subnet's network or broadcast address
 - `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
 - `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a required field is missing, a field has the wrong type or an unparseable value, or an unknown field such as `parent_id` is present
 
@@ -122,6 +125,7 @@ Validation messages returned in `error`:
 | `description` is too long | `description must be at most 1000 characters` |
 | `vlan_id` is out of range | `vlan_id must be between 1 and 4094` |
 | `cidr` is the same network as an existing subnet | `a subnet with this cidr already exists` |
+| A recorded address would become the network or broadcast address | `address 10.0.1.0 is recorded and would become the network or broadcast address of 10.0.1.0/24` |
 
 ### `PATCH /api/subnets/{id}`
 
@@ -197,15 +201,178 @@ Deletes one subnet. Its child subnets are not deleted; they move up to the delet
 
 For example, with `10.0.0.0/8` containing `10.0.0.0/16`, which contains `10.0.1.0/24`, deleting `10.0.0.0/16` makes `10.0.0.0/8` the parent of `10.0.1.0/24`.
 
+Addresses recorded in the deleted subnet move to its parent, and their `updated_at` is set to the current time. Addresses recorded in its child subnets stay with those children. The request is rejected with `409 Conflict`, and nothing is changed, in two cases:
+
+- The subnet has recorded addresses and no parent to move them to. Delete its addresses first.
+- A recorded address would become the parent's network or broadcast address, which IPv4 subnets of /30 or shorter reserve. For example, with `10.0.0.0/31` under `10.0.0.0/24` and the address `10.0.0.0` recorded in `10.0.0.0/31`, deleting `10.0.0.0/31` is rejected.
+
 - `204 No Content` with no response body
 - `404 Not Found` if no subnet has that ID
 - `400 Bad Request` if `id` is not a valid UUID
+- `409 Conflict` if the subnet's recorded addresses cannot move to a parent, as described above
 
 Error messages returned in `error`:
 
 | Condition | `error` |
 | --- | --- |
 | No subnet has that ID | `not found` |
+| The subnet has recorded addresses and no parent | `subnet has recorded addresses and no parent subnet to move them to; delete its addresses first` |
+| A recorded address would become the parent's network or broadcast address | `address 10.0.0.0 would become the network or broadcast address of the parent subnet 10.0.0.0/24; delete it first` |
+
+## Addresses
+
+### The address object
+
+```json
+{
+  "id": "3f1c2b8e-9d4a-4e2f-8b6a-1c5d7e9f0a12",
+  "address": "10.0.1.5",
+  "subnet_id": "7a904281-76dd-4a32-a76c-f86f6bc0d839",
+  "hostname": "web01",
+  "description": "",
+  "source": "manual",
+  "created_at": "2026-09-30T12:00:00.123456Z",
+  "updated_at": "2026-09-30T12:00:00.123456Z"
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string (UUID) | Unique identifier |
+| `address` | string | A single IPv4 or IPv6 address, without a prefix length. Unique across all subnets. |
+| `subnet_id` | string (UUID) | The most specific subnet that contains the address. Set by the server, and changed when subnets are created or deleted; see [`POST /api/subnets`](#post-apisubnets) and [`DELETE /api/subnets/{id}`](#delete-apisubnetsid). |
+| `hostname` | string | Free text. Empty string when not set. |
+| `description` | string | Free text. Empty string when not set. |
+| `source` | string | How the address was recorded: `manual` for an address recorded with [`POST /api/addresses`](#post-apiaddresses), or `allocated` for an address handed out by [`POST /api/subnets/{id}/addresses/allocate`](#post-apisubnetsidaddressesallocate). The database also accepts `discovered`, reserved for network discovery, which is not built; no current endpoint sets it. |
+| `created_at` | string | RFC 3339 timestamp, UTC |
+| `updated_at` | string | RFC 3339 timestamp, UTC |
+
+There is no endpoint to edit an address yet.
+
+### `POST /api/addresses`
+
+Records an address. The request body must be a JSON object sent with `Content-Type: application/json`.
+
+```json
+{
+  "address": "10.0.1.5",
+  "hostname": "web01",
+  "description": "Rack 4 web server"
+}
+```
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `address` | string | Yes | A single IPv4 or IPv6 address, without a prefix length: `10.0.1.5` is accepted, `10.0.1.5/32` is rejected with `422`. Must lie inside an existing subnet and must not already be recorded. |
+| `hostname` | string | No | Leading and trailing whitespace is removed before validation and storage. After trimming, at most 253 characters. The format is not checked. Defaults to an empty string. |
+| `description` | string | No | At most 1000 characters. Stored as sent, without trimming. Defaults to an empty string. |
+
+Character limits count Unicode characters, not bytes. Fields not listed above are rejected with `422`, including `subnet_id` and `source`.
+
+The server chooses the subnet: the address is placed in the most specific subnet that contains it, the one with the longest prefix. The new address has `source` set to `manual`.
+
+An IPv4 subnet of /30 or shorter reserves its network and broadcast addresses, so they cannot be recorded in it. For example, `10.0.1.0` and `10.0.1.255` are rejected when they would be placed in `10.0.1.0/24`. IPv4 /31 and /32 subnets and IPv6 subnets reserve no addresses. The rule applies only to the subnet the address is placed in: `10.0.1.0` is accepted when the most specific subnet containing it is `10.0.0.0/16`.
+
+Checks run in this order, and only the first failure is reported:
+
+1. The field rules in the table, in the order `hostname`, `description`.
+2. Some subnet must contain the address.
+3. The address must not be the network or broadcast address of the subnet it is placed in.
+4. The address must not already be recorded.
+
+- `201 Created` with the new address object
+- `400 Bad Request` if a field rule fails, no subnet contains the address, the address is reserved in its subnet, or the body is not valid JSON
+- `409 Conflict` if the address is already recorded
+- `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
+- `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: `address` is missing or is not a valid address, a field has the wrong type, or an unknown field is present
+
+Validation messages returned in `error`:
+
+| Condition | `error` |
+| --- | --- |
+| `hostname` is too long | `hostname must be at most 253 characters` |
+| `description` is too long | `description must be at most 1000 characters` |
+| No subnet contains the address | `address 192.168.1.10 is not inside any subnet; create its subnet first` |
+| The address is reserved in its subnet | `address 10.0.1.0 is the network or broadcast address of subnet 10.0.1.0/24` |
+| The address is already recorded | `this address is already recorded` |
+
+### `GET /api/addresses/{id}`
+
+Returns one address.
+
+- `200 OK` with an address object
+- `404 Not Found` if no address has that ID
+- `400 Bad Request` if `id` is not a valid UUID
+
+### `GET /api/subnets/{id}/addresses`
+
+Lists the addresses recorded in one subnet, in numeric order. Addresses in the subnet's child subnets are not included; list them through each child. There is no pagination or filtering yet.
+
+- `200 OK` with an array of address objects, empty if the subnet has none
+- `404 Not Found` if no subnet has that ID
+- `400 Bad Request` if `id` is not a valid UUID
+
+### `POST /api/subnets/{id}/addresses/allocate`
+
+Records and returns the lowest free address in the subnet. The request body must be a JSON object sent with `Content-Type: application/json`. Send `{}` to allocate an address without details, or include a hostname and description:
+
+```json
+{
+  "hostname": "web02",
+  "description": "Rack 4 web server"
+}
+```
+
+`hostname` and `description` follow the same rules as in [`POST /api/addresses`](#post-apiaddresses). Fields not listed are rejected with `422`.
+
+The server searches the subnet's range from the lowest address up and returns the first address that is not excluded:
+
+- In an IPv4 subnet of /30 or shorter, the network and broadcast addresses are excluded. In an IPv4 /31 or /32, every address is a candidate.
+- In an IPv6 subnet shorter than /128, the first address of the subnet (the Subnet-Router anycast address) is excluded. The last address is a candidate. In an IPv6 /128, the single address is a candidate.
+- Addresses inside the subnet's child subnets are excluded.
+- Addresses already recorded in the subnet are excluded.
+
+The new address has `source` set to `allocated`. For example, allocating from an empty `10.0.1.0/24` returns `10.0.1.1`; if `10.0.1.0/26` is a child subnet, it returns `10.0.1.64`. Allocating from an empty `fd00:10::/64` returns `fd00:10::1`.
+
+Allocations take the same shared lock as creating and deleting subnets and recording addresses, so their placement decisions never interleave and concurrent requests never receive the same address.
+
+Checks run in this order, and only the first failure is reported:
+
+1. `id` must be a valid UUID.
+2. The body must be JSON with the request shape.
+3. The field rules, in the order `hostname`, `description`.
+4. The subnet must exist.
+5. The subnet must have a free address.
+
+- `201 Created` with the new address object
+- `400 Bad Request` if `id` is not a valid UUID, a field rule fails, or the body is not valid JSON
+- `404 Not Found` if no subnet has that ID
+- `409 Conflict` if the subnet has no free address
+- `415 Unsupported Media Type` if the `Content-Type` header is not `application/json`
+- `422 Unprocessable Entity` if the body is valid JSON but does not match the request shape: a field has the wrong type or an unknown field is present
+
+Validation messages returned in `error`:
+
+| Condition | `error` |
+| --- | --- |
+| `hostname` is too long | `hostname must be at most 253 characters` |
+| `description` is too long | `description must be at most 1000 characters` |
+| No subnet has that ID | `not found` |
+| The subnet has no free address | `subnet 10.0.1.0/30 has no free addresses` |
+
+### `DELETE /api/addresses/{id}`
+
+Deletes one address.
+
+- `204 No Content` with no response body
+- `404 Not Found` if no address has that ID
+- `400 Bad Request` if `id` is not a valid UUID
+
+Error messages returned in `error`:
+
+| Condition | `error` |
+| --- | --- |
+| No address has that ID | `not found` |
 
 ## Web UI
 

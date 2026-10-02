@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT address AS \"address: IpAddr\" FROM address WHERE subnet_id = $1 AND address <<= $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address: IpAddr",
+        "type_info": "Inet",
+        "origin": {
+          "Table": {
+            "table": "address",
+            "name": "address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e1362f0001ebf07b3839efdeedfc8ec1fc22c10dd613940e28cf7ae2c140ec3d"
+}

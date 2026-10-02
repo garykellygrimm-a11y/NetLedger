@@ -1,4 +1,6 @@
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use std::net::IpAddr;
+
 use chrono::{DateTime, Utc};
 use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -6,12 +8,13 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    addresses::is_reserved_in,
     error::AppError,
     extractors::{AppJson, AppPath},
 };
 
 const DEADLOCK_DETECTED: &str = "40P01";
-const PLACEMENT_LOCK_KEY: i64 = 0x4e45_544c_4544_4752;
+pub(crate) const PLACEMENT_LOCK_KEY: i64 = 0x4e45_544c_4544_4752;
 const NAME_MAX_CHARS: usize = 100;
 const DESCRIPTION_MAX_CHARS: usize = 1000;
 
@@ -211,6 +214,26 @@ async fn create_subnet(
     .fetch_optional(&mut *tx)
     .await?;
 
+    if let Some(parent_id) = parent_id {
+        let inside = sqlx::query_scalar!(
+            r#"SELECT address AS "address: IpAddr" FROM address WHERE subnet_id = $1 AND address <<= $2"#,
+            parent_id,
+            input.cidr,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if let Some(address) = inside
+            .iter()
+            .find(|address| is_reserved_in(input.cidr, **address))
+        {
+            return Err(AppError::Conflict(format!(
+                "address {address} is recorded and would become the network or broadcast address of {}",
+                input.cidr
+            )));
+        }
+    }
+
     let subnet = sqlx::query_as!(
         Subnet,
         r#"
@@ -243,6 +266,22 @@ async fn create_subnet(
     .execute(&mut *tx)
     .await
     .map_err(map_create_error)?;
+
+    if let Some(parent_id) = parent_id {
+        sqlx::query!(
+            r#"
+            UPDATE address
+            SET subnet_id = $1, updated_at = now()
+            WHERE subnet_id = $2
+              AND address <<= $3
+            "#,
+            subnet.id,
+            parent_id,
+            input.cidr,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await.map_err(map_create_error)?;
 
@@ -304,6 +343,56 @@ async fn delete_subnet(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    match parent_id {
+        Some(parent_id) => {
+            let parent_cidr = sqlx::query_scalar!(
+                r#"SELECT cidr AS "cidr: IpNet" FROM subnet WHERE id = $1"#,
+                parent_id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let moving = sqlx::query_scalar!(
+                r#"SELECT address AS "address: IpAddr" FROM address WHERE subnet_id = $1"#,
+                id
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if let Some(address) = moving
+                .iter()
+                .find(|address| is_reserved_in(parent_cidr, **address))
+            {
+                return Err(AppError::Conflict(format!(
+                    "address {address} would become the network or broadcast address of the parent subnet {parent_cidr}; delete it first"
+                )));
+            }
+
+            sqlx::query!(
+                "UPDATE address SET subnet_id = $2, updated_at = now() WHERE subnet_id = $1",
+                id,
+                parent_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        None => {
+            let recorded = sqlx::query_scalar!(
+                r#"SELECT EXISTS (SELECT 1 FROM address WHERE subnet_id = $1) AS "exists!""#,
+                id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+
+            if recorded {
+                return Err(AppError::Conflict(
+                    "subnet has recorded addresses and no parent subnet to move them to; delete its addresses first"
+                        .to_string(),
+                ));
+            }
+        }
+    }
 
     sqlx::query!(
         "UPDATE subnet SET parent_id = $2, updated_at = now() WHERE parent_id = $1",
