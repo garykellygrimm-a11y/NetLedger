@@ -8,6 +8,8 @@ NetLedger is an IP address management tool: a network source of truth for subnet
 
 It is deliberately not a configuration management database (CMDB), and it does not run DHCP or DNS services. Instead, it aims to be a trustworthy data source for those systems: other tools can read from NetLedger through its API, and NetLedger can read leases and records from existing DHCP and DNS servers.
 
+PostgreSQL is the only supported database. NetLedger relies on PostgreSQL's network address types, exclusion constraints, and transactional guarantees to keep its data correct, so other databases are out of scope.
+
 ## Built
 
 | Version | Highlights |
@@ -21,20 +23,45 @@ It is deliberately not a configuration management database (CMDB), and it does n
 | 0.5.0 | IP address tracking: addresses are placed in their most specific subnet, move with the subnet tree, and can be allocated as the next free address |
 | 0.5.1 | Web UI for addresses: list, record, allocate, and delete, with subnet utilization |
 
-## Planned
+## Criteria for 1.0
 
-### 0.6: Authentication, roles, and auditing
+Version 1.0 is a promise of stability: after it, breaking changes require a new major version. It ships when all of these are true:
 
-NetLedger cannot be deployed until it has this. Today, anyone who can reach the server can change anything.
+1. **Deployable in controlled environments**, including smart card sign-in through an F5 load balancer.
+2. **Secure enough for review**: authentication, roles, auditing, HTTPS, accurate FIPS claims, and signed releases.
+3. **Useful day to day as an IPAM tool**, including network discovery.
+4. **The intended user interface**, after a dedicated design pass.
+5. **Installable and documented**, including a documented, STIG-aligned way to deploy PostgreSQL and API examples in several languages.
+6. **Hardened**, through a release phase that adds nothing new and verifies everything.
 
-- Sign-in for the web UI and API tokens for automation, such as provisioning pipelines that allocate addresses
-- Roles, at minimum read-only, editor, and administrator
+Work that does not serve these criteria is planned after 1.0.
+
+## Planned before 1.0
+
+Each version below ships as a series of patch releases as its pieces land.
+
+### 0.6: Authentication core
+
+NetLedger cannot be deployed until it has this. Today, anyone who can reach the server can change anything. See [ADR 0004](adr/0004-authentication-core.md).
+
+- User accounts, each with one or more sign-in identities, so new sign-in methods attach to existing accounts
+- Local password sign-in following NIST SP 800-63B Revision 4
+- Configurable password hashing: Argon2id by default, or PBKDF2 with HMAC-SHA-256 where FIPS 140 is required
+- Server-side browser sessions and API tokens for automation, such as provisioning pipelines that allocate addresses
+- Roles: viewer, editor, and administrator
 - An audit log of who changed what and when
-- Design to cover local accounts, directory services, and smart card authentication, decided in an ADR before implementation
+- Built-in HTTPS
+- No default credentials; the first administrator is created with a setup command
 - Address status, so an address can be marked reserved as well as in use
 - Address counts on the subnet list, so the web UI can show utilization for every subnet at once
 
-### 0.7: Network discovery
+### 0.7: Smart card sign-in through an F5
+
+- CAC and PIV sign-in where an F5 BIG-IP validates the certificate and forwards it to NetLedger
+- Trust in forwarded certificates is off by default and limited to configured proxy addresses
+- Deployment guidance for the F5 configuration and for restricting direct access to NetLedger
+
+### 0.8: Network discovery
 
 Tier 1 discovery, which needs no agents and no credentials:
 
@@ -42,12 +69,7 @@ Tier 1 discovery, which needs no agents and no credentials:
 - Addresses found by a scan are recorded with the `discovered` source and a last-seen time
 - Designed to be approvable on controlled networks: off by default, enabled per subnet, rate-limited, and logged
 
-### 0.8: Reconciliation
-
-- Read-only import of DHCP leases and DNS records
-- Comparison of recorded, discovered, and imported data, highlighting disagreements such as an active address nobody recorded or a recorded address that never answers
-
-### 0.9: Design pass and packaging
+### 0.9: Design pass
 
 - A polished, consistent web UI, including:
   - A per-subnet address heatmap showing assigned, reserved, free, and discovered-but-unrecorded addresses
@@ -58,15 +80,27 @@ Tier 1 discovery, which needs no agents and no credentials:
   - Styling is compiled at build time, so the strict Content Security Policy stays intact; no runtime CSS-in-JS
   - Fonts and icons are bundled into the binary, never loaded from a CDN
   - Status is never shown by color alone, to meet Section 508 accessibility requirements
-- Installers and deployment guidance: an RPM for RHEL-family systems and a Windows service
 
-### 1.0: Complete and tested
+### 0.10: Packaging, signing, and documentation
 
-Version 1.0 is a quality bar rather than a feature list: the features above are complete, documented, covered by tests, and suitable for production use.
+- An RPM for RHEL-family systems and a Windows service
+- Signed releases: Authenticode-signed Windows binaries and installer, GPG-signed RPMs, and documented verification steps. IdenTrust is the likely certificate vendor, pending confirmation of which certificates target environments accept. Releases are designed so organizations can verify and re-sign them with their own certificates.
+- A software bill of materials (SBOM) and build provenance for each release
+- A documented, STIG-aligned way to deploy PostgreSQL for NetLedger
+- The API documentation described below
+
+### 0.11: Hardening
+
+No new features. Bugs found become 0.11 patch releases, and 1.0.0 ships after a round of testing finds nothing new.
+
+- A security review of the code against the architecture decision records
+- Clean installs and upgrades with existing data, on RHEL-family systems and Windows Server
+- A walkthrough of every documented instruction and example
+- Vulnerability scanning of the kind used in controlled environments
 
 ## API documentation
 
-This work runs alongside the versions above.
+This work runs alongside the versions above and is complete by 0.10.
 
 - An OpenAPI description generated from the server code, so the reference documentation cannot drift from the implementation
 - Interactive API documentation served by NetLedger itself, working fully offline
@@ -79,8 +113,12 @@ This work runs alongside the versions above.
 
 ## After 1.0
 
-Ideas under consideration, in no particular order:
+New functionality after 1.0 ships as minor versions (1.1, 1.2, and so on). Ideas under consideration, in no particular order:
 
+- Directory sign-in through OIDC and LDAP
+- Smart card sign-in directly to NetLedger, without an F5
+- Reconciliation: read-only import of DHCP leases and DNS records, compared against recorded and discovered data
+- A FIPS build that uses a FIPS 140-validated cryptographic module for TLS
 - Changing a subnet's CIDR
 - Network topology from SNMP, LLDP, and CDP data
 - Export for CMDB import jobs
