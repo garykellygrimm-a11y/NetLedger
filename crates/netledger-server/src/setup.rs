@@ -84,17 +84,26 @@ pub async fn create_administrator(
 
     sqlx::query!(
         r#"
-        INSERT INTO audit_log (actor_username, action, target_type, target_id, details)
+        INSERT INTO audit_log (actor_username, action, outcome, target_type, target_id, details)
         VALUES (
             'setup',
             'account.create',
+            'success',
             'account',
             $1,
-            jsonb_build_object('username', $2::text, 'role', 'administrator', 'via', 'setup command')
+            jsonb_build_object(
+                'username', $2::text,
+                'role', 'administrator',
+                'via', 'setup command',
+                'os_user', $3::text,
+                'hostname', $4::text
+            )
         )
         "#,
         account_id,
-        username
+        username,
+        operator_user(),
+        operator_host()
     )
     .execute(&mut *tx)
     .await?;
@@ -102,6 +111,16 @@ pub async fn create_administrator(
     tx.commit().await?;
 
     Ok(account_id)
+}
+
+fn operator_user() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn operator_host() -> String {
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -144,14 +163,20 @@ mod tests {
         .unwrap();
         assert!(passwords::verify_password(PASSWORD, &secret_hash));
 
-        let audit_entries = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM audit_log WHERE target_id = $1 AND action = 'account.create'"#,
+        let audit = sqlx::query!(
+            r#"
+            SELECT outcome, details ->> 'os_user' AS os_user, details ->> 'hostname' AS hostname
+            FROM audit_log
+            WHERE target_id = $1 AND action = 'account.create'
+            "#,
             id
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(audit_entries, 1);
+        assert_eq!(audit.outcome, "success");
+        assert!(!audit.os_user.unwrap().is_empty());
+        assert!(!audit.hostname.unwrap().is_empty());
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]

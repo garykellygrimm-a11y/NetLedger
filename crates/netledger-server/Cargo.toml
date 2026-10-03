@@ -11,6 +11,7 @@ argon2.workspace = true
 axum.workspace = true
 chrono.workspace = true
 dotenvy.workspace = true
+gethostname.workspace = true
 ipnet.workspace = true
 pbkdf2.workspace = true
 rpassword.workspace = true
