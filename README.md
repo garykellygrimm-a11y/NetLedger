@@ -1,5 +1,10 @@
 # NetLedger
 
+[![CI](https://github.com/garykellygrimm-a11y/NetLedger/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/garykellygrimm-a11y/NetLedger/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/garykellygrimm-a11y/NetLedger)](https://github.com/garykellygrimm-a11y/NetLedger/releases/latest)
+[![Minimum Rust version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgarykellygrimm-a11y%2FNetLedger%2Fmain%2FCargo.toml&query=%24.workspace.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#prerequisites)
+[![License: MIT](https://img.shields.io/github/license/garykellygrimm-a11y/NetLedger)](LICENSE)
+
 NetLedger is an IP address management (IPAM) tool for tracking subnets and address allocations. It is designed to run anywhere from a single Windows workstation to an enterprise or air-gapped datacenter, from one codebase configured through environment variables. The backend is a Rust web server built on Axum, backed by PostgreSQL through SQLx. The front end, in early development, uses React and TypeScript.
 
 ## Status
