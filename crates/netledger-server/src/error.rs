@@ -10,7 +10,9 @@ use tracing::error;
 pub enum AppError {
     BadRequest(String),
     NotFound,
-    Conflict(String),
+    Unauthorized,
+    #[expect(dead_code, reason = "used by route protection in the next piece")]
+    Forbidden,    Conflict(String),
     Rejected { status: StatusCode, message: String },
     Database(sqlx::Error),
 }
@@ -25,6 +27,14 @@ impl IntoResponse for AppError {
         let (status, message) = match self {
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            AppError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "authentication required".to_string(),
+            ),
+            AppError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "insufficient permissions".to_string(),
+            ),
             AppError::Conflict(message) => (StatusCode::CONFLICT, message),
             AppError::Rejected { status, message } => (status, message),
             AppError::Database(err) => {

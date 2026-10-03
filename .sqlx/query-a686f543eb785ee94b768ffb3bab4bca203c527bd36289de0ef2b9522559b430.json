@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT secret_hash FROM identity WHERE account_id = $1 AND kind = 'password'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identity",
+            "name": "secret_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "a686f543eb785ee94b768ffb3bab4bca203c527bd36289de0ef2b9522559b430"
+}
