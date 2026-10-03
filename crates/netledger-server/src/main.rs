@@ -2,6 +2,8 @@ mod addresses;
 mod config;
 mod error;
 mod extractors;
+mod passwords;
+mod setup;
 mod subnets;
 #[cfg(test)]
 mod test_support;
@@ -9,7 +11,7 @@ mod web;
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::{Router, extract::State, http::StatusCode, routing::get};
 use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
 use tracing::{error, info};
@@ -65,6 +67,22 @@ async fn main() -> Result<()> {
         .context("failed to run database migrations")?;
     info!("database migrations are up to date");
 
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        None => serve(db, &config).await,
+        Some("create-admin") => {
+            let username = args
+                .next()
+                .context("usage: netledger-server create-admin <username>")?;
+            setup::create_admin_interactively(&db, config.password_hash, &username).await
+        }
+        Some(other) => {
+            bail!("unknown command {other}; usage: netledger-server [create-admin <username>]")
+        }
+    }
+}
+
+async fn serve(db: PgPool, config: &Config) -> Result<()> {
     let router = app(db);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

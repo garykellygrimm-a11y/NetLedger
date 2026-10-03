@@ -2,9 +2,12 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 
+use crate::passwords::HashAlgorithm;
+
 pub struct Config {
     pub database_url: String,
     pub bind_addr: SocketAddr,
+    pub password_hash: HashAlgorithm,
 }
 
 impl Config {
@@ -14,10 +17,16 @@ impl Config {
             .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
             .parse()
             .context("NETLEDGER_BIND_ADDR must be an address and port, like 127.0.0.1:8080")?;
+        let password_hash = std::env::var("NETLEDGER_PASSWORD_HASH")
+            .ok()
+            .map(|value| HashAlgorithm::parse(&value))
+            .unwrap_or(Some(HashAlgorithm::Argon2id))
+            .context("NETLEDGER_PASSWORD_HASH must be argon2id or pbkdf2-sha256")?;
 
         Ok(Self {
             database_url,
             bind_addr,
+            password_hash,
         })
     }
 }
