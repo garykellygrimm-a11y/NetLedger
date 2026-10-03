@@ -45,3 +45,16 @@ export type AllocateAddressInput = {
     hostname: string
     description: string
 }
+
+export type Role = 'viewer' | 'editor' | 'administrator'
+
+export type CurrentUser = {
+    account_id: string
+    username: string
+    role: Role
+}
+
+export type SignInInput = {
+    username: string
+    password: string
+}

@@ -1,9 +1,22 @@
 import { useEffect, useState } from 'react'
 import { AddressPanel } from './AddressPanel.tsx'
-import { ApiError, deleteSubnet, listSubnets } from './api.ts'
+import {
+  ApiError,
+  currentSession,
+  deleteSubnet,
+  listSubnets,
+  setSessionLostHandler,
+  signOut,
+} from './api.ts'
+import { SignInForm } from './SignInForm.tsx'
 import { SubnetForm } from './SubnetForm.tsx'
 import { SubnetTable } from './SubnetTable.tsx'
-import type { Subnet } from './types.ts'
+import type { CurrentUser, Subnet } from './types.ts'
+
+type SessionState =
+  | { status: 'checking' }
+  | { status: 'signed-out'; notice: string | null }
+  | { status: 'signed-in'; user: CurrentUser }
 
 type LoadState =
   | { status: 'loading' }
@@ -16,6 +29,81 @@ type ActionState =
   | { status: 'error'; message: string }
 
 function App() {
+  const [session, setSession] = useState<SessionState>({ status: 'checking' })
+
+  useEffect(() => {
+    setSessionLostHandler(() =>
+      setSession({ status: 'signed-out', notice: 'Your session has ended. Sign in again.' }),
+    )
+    return () => setSessionLostHandler(null)
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    currentSession(controller.signal)
+      .then((user) => setSession({ status: 'signed-in', user }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) {
+          return
+        }
+        const notice =
+          error instanceof ApiError && error.status === 401
+            ? null
+            : 'Could not reach the NetLedger server.'
+        setSession({ status: 'signed-out', notice })
+      })
+
+    return () => controller.abort()
+  }, [])
+
+  async function handleSignOut() {
+    try {
+      await signOut()
+    } catch {
+      // The cookie is cleared server-side on the next request either way.
+    }
+    setSession({ status: 'signed-out', notice: null })
+  }
+
+  if (session.status === 'checking') {
+    return (
+      <main>
+        <header>
+          <h1>NetLedger</h1>
+          <p className="subtitle">IP address management</p>
+        </header>
+        <p>Checking your session…</p>
+      </main>
+    )
+  }
+
+  if (session.status === 'signed-out') {
+    return (
+      <main>
+        <header>
+          <h1>NetLedger</h1>
+          <p className="subtitle">IP address management</p>
+        </header>
+        {session.notice && (
+          <p role="status" className="error">
+            {session.notice}
+          </p>
+        )}
+        <SignInForm onSignedIn={(user) => setSession({ status: 'signed-in', user })} />
+      </main>
+    )
+  }
+
+  return <Workspace user={session.user} onSignOut={handleSignOut} />
+}
+
+type WorkspaceProps = {
+  user: CurrentUser
+  onSignOut: () => void
+}
+
+function Workspace({ user, onSignOut }: WorkspaceProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [action, setAction] = useState<ActionState>({ status: 'idle' })
   const [refreshKey, setRefreshKey] = useState(0)
@@ -71,20 +159,33 @@ function App() {
   const subnets = state.status === 'loaded' ? state.subnets : []
   const selected = subnets.find((subnet) => subnet.id === selectedId) ?? null
   const deletingId = action.status === 'deleting' ? action.id : null
+  const canEdit = user.role !== 'viewer'
 
   return (
     <main>
       <header>
-        <h1>NetLedger</h1>
-        <p className="subtitle">IP address management</p>
+        <div>
+          <h1>NetLedger</h1>
+          <p className="subtitle">IP address management</p>
+        </div>
+        <div className="session-bar">
+          <span>
+            Signed in as <strong>{user.username}</strong> ({user.role})
+          </span>
+          <button type="button" onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
       </header>
 
-      <SubnetForm
-        onCreated={() => {
-          setAction({ status: 'idle' })
-          refresh()
-        }}
-      />
+      {canEdit && (
+        <SubnetForm
+          onCreated={() => {
+            setAction({ status: 'idle' })
+            refresh()
+          }}
+        />
+      )}
 
       <section aria-labelledby="subnets-heading">
         <h2 id="subnets-heading">Subnets</h2>
