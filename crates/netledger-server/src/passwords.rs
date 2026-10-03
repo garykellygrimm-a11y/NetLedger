@@ -33,10 +33,6 @@ impl HashAlgorithm {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by sign-in in the next checkpoint")
-    )]
     fn phc_id(self) -> &'static str {
         match self {
             Self::Argon2id => "argon2id",
@@ -86,10 +82,6 @@ pub fn hash_password(password: &str, algorithm: HashAlgorithm) -> Result<String>
     Ok(hash.to_string())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by sign-in in the next checkpoint")
-)]
 pub fn verify_password(password: &str, stored: &str) -> bool {
     let Ok(hash) = PasswordHash::new(stored) else {
         return false;
@@ -105,10 +97,6 @@ pub fn verify_password(password: &str, stored: &str) -> bool {
     result.is_ok()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by sign-in in the next checkpoint")
-)]
 pub fn needs_rehash(stored: &str, algorithm: HashAlgorithm) -> bool {
     PasswordHash::new(stored)
         .map(|hash| hash.algorithm.as_str() != algorithm.phc_id())

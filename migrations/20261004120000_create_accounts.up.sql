@@ -29,6 +29,7 @@ CREATE UNIQUE INDEX identity_subject_key
 
 CREATE TABLE session (
     token_hash   bytea       PRIMARY KEY,
+    id           uuid        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
     account_id   uuid        NOT NULL REFERENCES account (id) ON DELETE CASCADE,
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_seen_at timestamptz NOT NULL DEFAULT now(),

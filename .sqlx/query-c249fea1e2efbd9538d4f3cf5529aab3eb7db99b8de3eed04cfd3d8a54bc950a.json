@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE session SET last_seen_at = now() - interval '31 minutes' WHERE token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c249fea1e2efbd9538d4f3cf5529aab3eb7db99b8de3eed04cfd3d8a54bc950a"
+}

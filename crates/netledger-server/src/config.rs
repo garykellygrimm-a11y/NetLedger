@@ -8,6 +8,7 @@ pub struct Config {
     pub database_url: String,
     pub bind_addr: SocketAddr,
     pub password_hash: HashAlgorithm,
+    pub cookie_secure: bool,
 }
 
 impl Config {
@@ -23,10 +24,17 @@ impl Config {
             .unwrap_or(Some(HashAlgorithm::Argon2id))
             .context("NETLEDGER_PASSWORD_HASH must be argon2id or pbkdf2-sha256")?;
 
+        let cookie_secure = match std::env::var("NETLEDGER_COOKIE_SECURE").as_deref() {
+            Ok("false") => false,
+            Ok("true") | Err(_) => true,
+            Ok(_) => anyhow::bail!("NETLEDGER_COOKIE_SECURE must be true or false"),
+        };
+
         Ok(Self {
             database_url,
             bind_addr,
             password_hash,
+            cookie_secure,
         })
     }
 }

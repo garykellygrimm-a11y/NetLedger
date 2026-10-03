@@ -3,40 +3,53 @@ mod config;
 mod error;
 mod extractors;
 mod passwords;
+mod sessions;
 mod setup;
 mod subnets;
 #[cfg(test)]
 mod test_support;
 mod web;
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use axum::{Router, extract::State, http::StatusCode, routing::get};
 use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::{config::Config, error::AppError};
+use crate::{config::Config, error::AppError, passwords::HashAlgorithm};
 
 static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
 
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
+    password_hash: HashAlgorithm,
+    cookie_secure: bool,
 }
 
+#[cfg(test)]
 fn app(db: PgPool) -> Router {
+    app_with(db, HashAlgorithm::Argon2id, true)
+}
+
+fn app_with(db: PgPool, password_hash: HashAlgorithm, cookie_secure: bool) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
         .nest(
             "/api",
-            subnets::router()
+            sessions::router()
+                .merge(subnets::router())
                 .merge(addresses::router())
                 .fallback(api_not_found),
         )
         .fallback(web::serve)
-        .with_state(AppState { db });
+        .with_state(AppState {
+            db,
+            password_hash,
+            cookie_secure,
+        });
 
     web::with_security_headers(router)
 }
@@ -83,13 +96,20 @@ async fn main() -> Result<()> {
 }
 
 async fn serve(db: PgPool, config: &Config) -> Result<()> {
-    let router = app(db);
+    if !config.cookie_secure {
+        warn!("NETLEDGER_COOKIE_SECURE=false: session cookies may be sent over plain HTTP");
+    }
+    let router = app_with(db, config.password_hash, config.cookie_secure);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .with_context(|| format!("failed to bind {}", config.bind_addr))?;
     info!("listening on {}", config.bind_addr);
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

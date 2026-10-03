@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO audit_log\n            (actor_id, actor_username, credential_id, source_addr, action, outcome, target_type, target_id)\n        VALUES ($1, $2, $3, $4, 'session.delete', 'success', 'session', $3)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Inet"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0dc3ff6b43d18e8fd1f6290ebdb6be6288a4c910fe834d48dc1ee12159f32bb"
+}
