@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::rejection::{JsonRejection, PathRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -11,8 +11,9 @@ pub enum AppError {
     BadRequest(String),
     NotFound,
     Unauthorized,
-    #[expect(dead_code, reason = "used by route protection in the next piece")]
-    Forbidden,    Conflict(String),
+    Forbidden,
+    TooManyRequests { retry_after_secs: u64 },
+    Conflict(String),
     Rejected { status: StatusCode, message: String },
     Database(sqlx::Error),
 }
@@ -35,6 +36,17 @@ impl IntoResponse for AppError {
                 StatusCode::FORBIDDEN,
                 "insufficient permissions".to_string(),
             ),
+            AppError::TooManyRequests { retry_after_secs } => {
+                let body = Json(ErrorBody {
+                    error: "too many failed attempts; try again later".to_string(),
+                });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                    body,
+                )
+                    .into_response();
+            }
             AppError::Conflict(message) => (StatusCode::CONFLICT, message),
             AppError::Rejected { status, message } => (status, message),
             AppError::Database(err) => {

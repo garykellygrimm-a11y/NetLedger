@@ -12,6 +12,7 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -26,6 +27,9 @@ use crate::{
 };
 
 pub const SESSION_COOKIE: &str = "netledger_session";
+const FAILURE_WINDOW_MINUTES: i64 = 15;
+const MAX_FAILURES_PER_ACCOUNT: i64 = 10;
+const MAX_FAILURES_PER_ADDRESS: i64 = 50;
 const SESSION_LIFETIME: Duration = Duration::hours(12);
 const SESSION_IDLE_TIMEOUT: Duration = Duration::minutes(30);
 const LAST_SEEN_WRITE_INTERVAL: Duration = Duration::seconds(60);
@@ -57,12 +61,12 @@ impl Role {
     }
 }
 
-#[expect(dead_code, reason = "used by route protection in the next piece")]
 impl Role {
     pub fn can_edit(self) -> bool {
         matches!(self, Role::Editor | Role::Administrator)
     }
 
+    #[expect(dead_code, reason = "used by user management in 0.6.4")]
     pub fn is_administrator(self) -> bool {
         matches!(self, Role::Administrator)
     }
@@ -96,19 +100,90 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
+pub struct Editor(pub CurrentUser);
+
+impl FromRequestParts<AppState> for Editor {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = CurrentUser::from_request_parts(parts, state).await?;
+        if user.role.can_edit() {
+            Ok(Editor(user))
+        } else {
+            Err(AppError::Forbidden)
+        }
+    }
+}
+
+#[expect(dead_code, reason = "used by user management in 0.6.4")]
+pub struct Administrator(pub CurrentUser);
+
+impl FromRequestParts<AppState> for Administrator {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = CurrentUser::from_request_parts(parts, state).await?;
+        if user.role.is_administrator() {
+            Ok(Administrator(user))
+        } else {
+            Err(AppError::Forbidden)
+        }
+    }
+}
+
 pub struct ClientAddr(pub Option<IpAddr>);
 
-impl<S: Send + Sync> FromRequestParts<S> for ClientAddr {
+impl FromRequestParts<AppState> for ClientAddr {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let addr = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let peer = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
             .await
             .ok()
             .map(|ConnectInfo(addr)| addr.ip());
 
-        Ok(ClientAddr(addr))
+        Ok(ClientAddr(client_address(
+            peer,
+            parts
+                .headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok()),
+            &state.trusted_proxies,
+        )))
     }
+}
+
+fn client_address(
+    peer: Option<IpAddr>,
+    forwarded_for: Option<&str>,
+    trusted: &[IpNet],
+) -> Option<IpAddr> {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|net| net.contains(&ip));
+
+    let peer = peer?;
+    if !is_trusted(peer) {
+        return Some(peer);
+    }
+
+    let Some(forwarded_for) = forwarded_for else {
+        return Some(peer);
+    };
+
+    forwarded_for
+        .split(',')
+        .rev()
+        .filter_map(|entry| entry.trim().parse::<IpAddr>().ok())
+        .find(|ip| !is_trusted(*ip))
+        .or(Some(peer))
 }
 
 pub fn router() -> Router<AppState> {
@@ -131,6 +206,11 @@ async fn sign_in(
     AppJson(body): AppJson<SignIn>,
 ) -> Result<(StatusCode, CookieJar, Json<CurrentUser>), AppError> {
     let username = setup::normalize_username(&body.username).unwrap_or_default();
+
+    if let Some(retry_after_secs) = failures_exceeded(&state.db, &username, source).await? {
+        record_failure(&state.db, &username, source, "rate limited").await?;
+        return Err(AppError::TooManyRequests { retry_after_secs });
+    }
 
     let found = sqlx::query!(
         r#"
@@ -204,7 +284,7 @@ async fn sign_in(
         account.id,
         account.username,
         session_id,
-        source.map(ipnet::IpNet::from)
+        source.map(IpNet::from)
     )
     .execute(&mut *tx)
     .await?;
@@ -247,7 +327,7 @@ async fn sign_out(
         user.account_id,
         user.username,
         user.session_id,
-        source.map(ipnet::IpNet::from)
+        source.map(IpNet::from)
     )
     .execute(&mut *tx)
     .await?;
@@ -303,6 +383,43 @@ async fn resolve_session(db: &PgPool, token: &str) -> Result<Option<CurrentUser>
     }))
 }
 
+async fn failures_exceeded(
+    db: &PgPool,
+    username: &str,
+    source: Option<IpAddr>,
+) -> Result<Option<u64>, AppError> {
+    let counts = sqlx::query!(
+        r#"
+        SELECT
+            count(*) FILTER (WHERE actor_username = $1) AS "by_account!",
+            count(*) FILTER (WHERE $2::inet IS NOT NULL AND source_addr = $2) AS "by_address!",
+            min(occurred_at) AS oldest
+        FROM audit_log
+        WHERE action = 'session.create'
+          AND outcome = 'failure'
+          AND occurred_at > now() - ($3::int * interval '1 minute')
+        "#,
+        username,
+        source.map(IpNet::from),
+        FAILURE_WINDOW_MINUTES as i32
+    )
+    .fetch_one(db)
+    .await?;
+
+    if counts.by_account < MAX_FAILURES_PER_ACCOUNT && counts.by_address < MAX_FAILURES_PER_ADDRESS
+    {
+        return Ok(None);
+    }
+
+    let window = Duration::minutes(FAILURE_WINDOW_MINUTES);
+    let retry_after = counts
+        .oldest
+        .map(|oldest| (oldest + window - Utc::now()).num_seconds().max(1))
+        .unwrap_or(window.num_seconds());
+
+    Ok(Some(retry_after as u64))
+}
+
 async fn record_failure(
     db: &PgPool,
     username: &str,
@@ -317,7 +434,7 @@ async fn record_failure(
         LEFT JOIN account a ON a.username = $1
         "#,
         username,
-        source.map(ipnet::IpNet::from),
+        source.map(IpNet::from),
         reason
     )
     .execute(db)
@@ -326,13 +443,13 @@ async fn record_failure(
     Ok(())
 }
 
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("the operating system random source is unavailable");
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn token_hash(token: &str) -> Vec<u8> {
+pub(crate) fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
@@ -592,7 +709,7 @@ mod tests {
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_password_is_rehashed_when_the_configured_algorithm_changes(pool: PgPool) {
         seed(&pool).await;
-        let app = crate::app_with(pool.clone(), HashAlgorithm::Pbkdf2Sha256, true);
+        let app = crate::app_with(pool.clone(), HashAlgorithm::Pbkdf2Sha256, true, Vec::new());
 
         assert_eq!(
             sign_in_as(&app, "gary", PASSWORD).await.0,
@@ -609,6 +726,87 @@ mod tests {
             sign_in_as(&app, "gary", PASSWORD).await.0,
             StatusCode::CREATED
         );
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn repeated_failures_lock_the_account_out_for_a_while(pool: PgPool) {
+        seed(&pool).await;
+        let app = crate::app(pool);
+
+        for _ in 0..MAX_FAILURES_PER_ACCOUNT {
+            assert_eq!(
+                sign_in_as(&app, "gary", "wrong password every time")
+                    .await
+                    .0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "username": "gary", "password": PASSWORD }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after: u64 = response.headers()[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=900).contains(&retry_after));
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn api_responses_are_never_cached(pool: PgPool) {
+        let app = crate::app(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[test]
+    fn forwarded_addresses_are_trusted_only_from_configured_proxies() {
+        let f5: IpAddr = "10.0.0.5".parse().unwrap();
+        let client: IpAddr = "192.0.2.10".parse().unwrap();
+        let trusted = vec!["10.0.0.0/24".parse::<IpNet>().unwrap()];
+
+        assert_eq!(
+            client_address(Some(f5), Some("192.0.2.10"), &trusted),
+            Some(client)
+        );
+        assert_eq!(
+            client_address(Some(f5), Some("192.0.2.10, 10.0.0.7"), &trusted),
+            Some(client)
+        );
+        assert_eq!(
+            client_address(Some(client), Some("203.0.113.9"), &trusted),
+            Some(client)
+        );
+        assert_eq!(client_address(Some(f5), None, &trusted), Some(f5));
+        assert_eq!(
+            client_address(Some(f5), Some("garbage"), &trusted),
+            Some(f5)
+        );
+        assert_eq!(client_address(None, Some("192.0.2.10"), &trusted), None);
     }
 
     fn cookie_token(cookie: &str) -> String {

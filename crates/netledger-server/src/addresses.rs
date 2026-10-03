@@ -18,6 +18,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AppJson, AppPath},
+    sessions::{CurrentUser, Editor},
     subnets::PLACEMENT_LOCK_KEY,
 };
 
@@ -100,6 +101,7 @@ pub(crate) fn is_reserved_in(subnet: IpNet, address: IpAddr) -> bool {
 
 async fn create_address(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppJson(input): AppJson<CreateAddress>,
 ) -> Result<(StatusCode, Json<Address>), AppError> {
     input.validate()?;
@@ -212,6 +214,7 @@ fn first_free_address(
 
 async fn allocate_address(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppPath(subnet_id): AppPath<Uuid>,
     AppJson(input): AppJson<AllocateAddress>,
 ) -> Result<(StatusCode, Json<Address>), AppError> {
@@ -275,6 +278,7 @@ async fn allocate_address(
 
 async fn get_address(
     State(state): State<AppState>,
+    _user: CurrentUser,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<Address>, AppError> {
     let address = sqlx::query_as!(
@@ -296,6 +300,7 @@ async fn get_address(
 
 async fn list_subnet_addresses(
     State(state): State<AppState>,
+    _user: CurrentUser,
     AppPath(subnet_id): AppPath<Uuid>,
 ) -> Result<Json<Vec<Address>>, AppError> {
     let exists = sqlx::query_scalar!(
@@ -328,6 +333,7 @@ async fn list_subnet_addresses(
 
 async fn delete_address(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let result = sqlx::query!("DELETE FROM address WHERE id = $1", id)
@@ -357,7 +363,7 @@ mod tests {
     use serde_json::{Value, json};
     use sqlx::PgPool;
 
-    use crate::test_support::send;
+    use crate::{sessions::Role, test_support::send};
 
     async fn create_subnet(app: &Router, cidr: &str) -> Value {
         let (status, body) = send(
@@ -377,7 +383,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn an_address_is_placed_in_the_most_specific_subnet(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.0.0/16").await;
         let servers = create_subnet(&app, "10.0.1.0/24").await;
 
@@ -396,7 +402,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn an_address_outside_every_subnet_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.0.0/16").await;
 
         let (status, body) = create_address(&app, json!({ "address": "192.168.1.10" })).await;
@@ -410,7 +416,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn network_and_broadcast_addresses_return_400(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.1.0/24").await;
 
         let (network, _) = create_address(&app, json!({ "address": "10.0.1.0" })).await;
@@ -422,7 +428,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_duplicate_address_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.1.0/24").await;
         create_address(&app, json!({ "address": "10.0.1.5" })).await;
 
@@ -434,7 +440,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn ipv6_addresses_are_supported(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "fd00:10::/64").await;
 
         let (status, body) = create_address(&app, json!({ "address": "fd00:10::5" })).await;
@@ -446,7 +452,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_subnets_addresses_are_listed_in_numeric_order(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
         for address in ["10.0.1.20", "10.0.1.3", "10.0.1.100"] {
             create_address(&app, json!({ "address": address })).await;
@@ -467,7 +473,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn listing_addresses_of_an_unknown_subnet_returns_404(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, _) = send(
             &app,
@@ -482,7 +488,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn deleting_an_address_removes_it(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.1.0/24").await;
         let (_, address) = create_address(&app, json!({ "address": "10.0.1.5" })).await;
         let uri = format!("/api/addresses/{}", address["id"].as_str().unwrap());
@@ -527,7 +533,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn allocation_returns_the_first_usable_address(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
 
         let (status, body) = allocate(&app, &subnet).await;
@@ -540,7 +546,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn allocation_skips_recorded_addresses(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
         create_address(&app, json!({ "address": "10.0.1.1" })).await;
         create_address(&app, json!({ "address": "10.0.1.2" })).await;
@@ -552,7 +558,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn allocation_skips_addresses_inside_child_subnets(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
         create_subnet(&app, "10.0.1.0/26").await;
 
@@ -563,7 +569,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_full_subnet_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/30").await;
         allocate(&app, &subnet).await;
         allocate(&app, &subnet).await;
@@ -576,7 +582,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn ipv6_allocation_starts_after_the_subnet_router_address(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "fd00:10::/64").await;
 
         let (_, body) = allocate(&app, &subnet).await;
@@ -586,7 +592,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn concurrent_allocations_never_return_the_same_address(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
 
         let (a, b, c, d) = tokio::join!(
@@ -610,7 +616,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn allocating_from_an_unknown_subnet_returns_404(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let missing = json!({ "id": "00000000-0000-0000-0000-000000000000" });
 
         let (status, _) = allocate(&app, &missing).await;
@@ -630,7 +636,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_new_subnet_adopts_addresses_inside_it(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.0.0/16").await;
         let (_, inside) = create_address(&app, json!({ "address": "10.0.1.5" })).await;
         let (_, outside) = create_address(&app, json!({ "address": "10.0.2.5" })).await;
@@ -646,7 +652,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_subnet_that_would_reserve_a_recorded_address_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create_subnet(&app, "10.0.0.0/16").await;
         create_address(&app, json!({ "address": "10.0.1.0" })).await;
 
@@ -664,7 +670,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn deleting_a_subnet_moves_its_addresses_to_its_parent(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let datacenter = create_subnet(&app, "10.0.0.0/16").await;
         let servers = create_subnet(&app, "10.0.1.0/24").await;
         let (_, address) = create_address(&app, json!({ "address": "10.0.1.5" })).await;
@@ -681,7 +687,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn deleting_a_top_level_subnet_with_addresses_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = create_subnet(&app, "10.0.1.0/24").await;
         create_address(&app, json!({ "address": "10.0.1.5" })).await;
 

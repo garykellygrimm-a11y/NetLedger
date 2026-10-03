@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+use ipnet::IpNet;
+
 use anyhow::{Context, Result};
 
 use crate::passwords::HashAlgorithm;
@@ -9,6 +11,7 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub password_hash: HashAlgorithm,
     pub cookie_secure: bool,
+    pub trusted_proxies: Vec<IpNet>,
 }
 
 impl Config {
@@ -30,11 +33,29 @@ impl Config {
             Ok(_) => anyhow::bail!("NETLEDGER_COOKIE_SECURE must be true or false"),
         };
 
+        let trusted_proxies = std::env::var("NETLEDGER_TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                entry
+                    .parse::<IpNet>()
+                    .or_else(|_| entry.parse::<std::net::IpAddr>().map(IpNet::from))
+                    .with_context(|| {
+                        format!(
+                            "NETLEDGER_TRUSTED_PROXIES contains an invalid address or CIDR: {entry}"
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
         Ok(Self {
             database_url,
             bind_addr,
             password_hash,
             cookie_secure,
+            trusted_proxies,
         })
     }
 }

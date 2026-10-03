@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            count(*) FILTER (WHERE actor_username = $1) AS \"by_account!\",\n            count(*) FILTER (WHERE $2::inet IS NOT NULL AND source_addr = $2) AS \"by_address!\",\n            min(occurred_at) AS oldest\n        FROM audit_log\n        WHERE action = 'session.create'\n          AND outcome = 'failure'\n          AND occurred_at > now() - ($3::int * interval '1 minute')\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "by_account!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "by_address!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "oldest",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Inet",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3cdcdf2db4e7cdc1fe6b85d988e2a052be7af55b1a6b7e82d2c4ff8ee94b6acc"
+}

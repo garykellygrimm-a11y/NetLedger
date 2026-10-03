@@ -13,8 +13,15 @@ mod web;
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use axum::{Router, extract::State, http::StatusCode, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    http::{HeaderValue, StatusCode, header},
+    routing::get,
+};
+use ipnet::IpNet;
 use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, info, warn};
 
 use crate::{config::Config, error::AppError, passwords::HashAlgorithm};
@@ -26,29 +33,39 @@ struct AppState {
     db: PgPool,
     password_hash: HashAlgorithm,
     cookie_secure: bool,
+    trusted_proxies: Vec<IpNet>,
 }
 
 #[cfg(test)]
 fn app(db: PgPool) -> Router {
-    app_with(db, HashAlgorithm::Argon2id, true)
+    app_with(db, HashAlgorithm::Argon2id, true, Vec::new())
 }
 
-fn app_with(db: PgPool, password_hash: HashAlgorithm, cookie_secure: bool) -> Router {
+fn app_with(
+    db: PgPool,
+    password_hash: HashAlgorithm,
+    cookie_secure: bool,
+    trusted_proxies: Vec<IpNet>,
+) -> Router {
+    let api = sessions::router()
+        .merge(subnets::router())
+        .merge(addresses::router())
+        .fallback(api_not_found)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ));
+
     let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
-        .nest(
-            "/api",
-            sessions::router()
-                .merge(subnets::router())
-                .merge(addresses::router())
-                .fallback(api_not_found),
-        )
+        .nest("/api", api)
         .fallback(web::serve)
         .with_state(AppState {
             db,
             password_hash,
             cookie_secure,
+            trusted_proxies,
         });
 
     web::with_security_headers(router)
@@ -99,7 +116,12 @@ async fn serve(db: PgPool, config: &Config) -> Result<()> {
     if !config.cookie_secure {
         warn!("NETLEDGER_COOKIE_SECURE=false: session cookies may be sent over plain HTTP");
     }
-    let router = app_with(db, config.password_hash, config.cookie_secure);
+    let router = app_with(
+        db,
+        config.password_hash,
+        config.cookie_secure,
+        config.trusted_proxies.clone(),
+    );
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
