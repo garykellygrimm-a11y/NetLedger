@@ -8,6 +8,7 @@ type Props = {
   subnet: Subnet
   hasChildren: boolean
   version: number
+  canEdit: boolean
   onClose: () => void
 }
 
@@ -27,7 +28,7 @@ const SOURCE_LABELS: Record<Address['source'], string> = {
   discovered: 'Discovered',
 }
 
-export function AddressPanel({ subnet, hasChildren, version, onClose }: Props) {
+export function AddressPanel({ subnet, hasChildren, version, canEdit, onClose }: Props) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [action, setAction] = useState<ActionState>({ status: 'idle' })
   const [refreshKey, setRefreshKey] = useState(0)
@@ -105,13 +106,15 @@ export function AddressPanel({ subnet, hasChildren, version, onClose }: Props) {
         </div>
       )}
 
-      <AddressForm
-        subnetId={subnet.id}
-        onChanged={() => {
-          setAction({ status: 'idle' })
-          refresh()
-        }}
-      />
+      {canEdit && (
+        <AddressForm
+          subnetId={subnet.id}
+          onChanged={() => {
+            setAction({ status: 'idle' })
+            refresh()
+          }}
+        />
+      )}
 
       {action.status === 'error' && (
         <p role="alert" className="error">
@@ -135,9 +138,11 @@ export function AddressPanel({ subnet, hasChildren, version, onClose }: Props) {
               <th scope="col">Hostname</th>
               <th scope="col">Description</th>
               <th scope="col">Source</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
+              {canEdit && (
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -147,19 +152,21 @@ export function AddressPanel({ subnet, hasChildren, version, onClose }: Props) {
                 <td>{address.hostname || '—'}</td>
                 <td>{address.description}</td>
                 <td className="source">{SOURCE_LABELS[address.source]}</td>
-                <td className="actions">
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => void handleDelete(address)}
-                    disabled={action.status === 'deleting'}
-                    aria-label={`Delete ${address.address}`}
-                  >
-                    {action.status === 'deleting' && action.id === address.id
-                      ? 'Deleting…'
-                      : 'Delete'}
-                  </button>
-                </td>
+                {canEdit && (
+                  <td className="actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => void handleDelete(address)}
+                      disabled={action.status === 'deleting'}
+                      aria-label={`Delete ${address.address}`}
+                    >
+                      {action.status === 'deleting' && action.id === address.id
+                        ? 'Deleting…'
+                        : 'Delete'}
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

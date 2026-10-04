@@ -205,6 +205,7 @@ function Workspace({ user, onSignOut }: WorkspaceProps) {
             subnets={state.subnets}
             deletingId={deletingId}
             selectedId={selectedId}
+            canEdit={canEdit}
             onSelect={(subnet) => setSelectedId(subnet.id)}
             onDelete={handleDelete}
             onUpdated={() => {
@@ -221,6 +222,7 @@ function Workspace({ user, onSignOut }: WorkspaceProps) {
           subnet={selected}
           hasChildren={subnets.some((subnet) => subnet.parent_id === selected.id)}
           version={refreshKey}
+          canEdit={canEdit}
           onClose={() => setSelectedId(null)}
         />
       )}

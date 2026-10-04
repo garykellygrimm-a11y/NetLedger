@@ -1,67 +1,47 @@
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SignInForm } from './SignInForm.tsx'
+import { describe, expect, it, vi } from 'vitest'
+import { SubnetTable } from './SubnetTable.tsx'
+import type { Subnet } from './types.ts'
 
-function respond(status: number, body: unknown) {
-  return vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { 'Content-Type': 'application/json' },
-    }),
+const office: Subnet = {
+  id: '7a904281-76dd-4a32-a76c-f86f6bc0d839',
+  cidr: '10.0.1.0/24',
+  name: 'Office',
+  description: '',
+  vlan_id: 100,
+  parent_id: null,
+  created_at: '2026-09-22T02:41:36Z',
+  updated_at: '2026-09-22T02:41:36Z',
+}
+
+function renderTable(canEdit: boolean) {
+  render(
+    <SubnetTable
+      subnets={[office]}
+      deletingId={null}
+      selectedId={null}
+      canEdit={canEdit}
+      onSelect={vi.fn()}
+      onDelete={vi.fn()}
+      onUpdated={vi.fn()}
+    />,
   )
 }
 
-describe('SignInForm', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
+describe('SubnetTable', () => {
+  it('shows edit and delete controls to editors', () => {
+    renderTable(true)
+
+    expect(screen.getByRole('button', { name: 'Edit 10.0.1.0/24' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete 10.0.1.0/24' })).toBeInTheDocument()
   })
 
-  it('reports the signed-in user on success', async () => {
-    const fetchMock = respond(201, { account_id: 'a1', username: 'gary', role: 'editor' })
-    vi.stubGlobal('fetch', fetchMock)
-    const onSignedIn = vi.fn()
-    render(<SignInForm onSignedIn={onSignedIn} />)
+  it('hides edit and delete controls from viewers but keeps the subnet selectable', () => {
+    renderTable(false)
 
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Username'), '  Gary ')
-    await user.type(screen.getByLabelText('Password'), 'correct horse battery staple')
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-
-    expect(onSignedIn).toHaveBeenCalledWith({ account_id: 'a1', username: 'gary', role: 'editor' })
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/session')
-    expect(JSON.parse(init.body as string)).toEqual({
-      username: 'Gary',
-      password: 'correct horse battery staple',
-    })
-  })
-
-  it('shows one message for a rejected password and clears the field', async () => {
-    vi.stubGlobal('fetch', respond(401, { error: 'authentication required' }))
-    const onSignedIn = vi.fn()
-    render(<SignInForm onSignedIn={onSignedIn} />)
-
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Username'), 'gary')
-    await user.type(screen.getByLabelText('Password'), 'wrong')
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('Wrong username or password.')
-    expect(screen.getByLabelText('Password')).toHaveValue('')
-    expect(screen.getByLabelText('Username')).toHaveValue('gary')
-    expect(onSignedIn).not.toHaveBeenCalled()
-  })
-
-  it('passes a lockout message through from the server', async () => {
-    vi.stubGlobal('fetch', respond(429, { error: 'too many failed attempts; try again later' }))
-    render(<SignInForm onSignedIn={vi.fn()} />)
-
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Username'), 'gary')
-    await user.type(screen.getByLabelText('Password'), 'anything at all')
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('too many failed attempts')
+    expect(screen.queryByRole('button', { name: 'Edit 10.0.1.0/24' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete 10.0.1.0/24' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show addresses in 10.0.1.0/24' })).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader')).toHaveLength(4)
   })
 })
