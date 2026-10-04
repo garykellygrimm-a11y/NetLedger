@@ -11,7 +11,11 @@ import {
 import { SignInForm } from './SignInForm.tsx'
 import { SubnetForm } from './SubnetForm.tsx'
 import { SubnetTable } from './SubnetTable.tsx'
+import { TokensPage } from './TokensPage.tsx'
+import { UserMenu } from './UserMenu.tsx'
 import type { CurrentUser, Subnet } from './types.ts'
+
+type View = 'subnets' | 'tokens'
 
 type SessionState =
   | { status: 'checking' }
@@ -95,15 +99,41 @@ function App() {
     )
   }
 
-  return <Workspace user={session.user} onSignOut={handleSignOut} />
+  return <Shell user={session.user} onSignOut={handleSignOut} />
 }
 
-type WorkspaceProps = {
+type ShellProps = {
   user: CurrentUser
   onSignOut: () => void
 }
 
-function Workspace({ user, onSignOut }: WorkspaceProps) {
+function Shell({ user, onSignOut }: ShellProps) {
+  const [view, setView] = useState<View>('subnets')
+
+  return (
+    <main>
+      <header>
+        <div>
+          <h1>NetLedger</h1>
+          <p className="subtitle">IP address management</p>
+        </div>
+        <UserMenu user={user} onOpenTokens={() => setView('tokens')} onSignOut={onSignOut} />
+      </header>
+
+      {view === 'tokens' ? (
+        <TokensPage onBack={() => setView('subnets')} />
+      ) : (
+        <Workspace user={user} />
+      )}
+    </main>
+  )
+}
+
+type WorkspaceProps = {
+  user: CurrentUser
+}
+
+function Workspace({ user }: WorkspaceProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [action, setAction] = useState<ActionState>({ status: 'idle' })
   const [refreshKey, setRefreshKey] = useState(0)
@@ -162,22 +192,7 @@ function Workspace({ user, onSignOut }: WorkspaceProps) {
   const canEdit = user.role !== 'viewer'
 
   return (
-    <main>
-      <header>
-        <div>
-          <h1>NetLedger</h1>
-          <p className="subtitle">IP address management</p>
-        </div>
-        <div className="session-bar">
-          <span>
-            Signed in as <strong>{user.username}</strong> ({user.role})
-          </span>
-          <button type="button" onClick={onSignOut}>
-            Sign out
-          </button>
-        </div>
-      </header>
-
+    <>
       {canEdit && (
         <SubnetForm
           onCreated={() => {
@@ -226,7 +241,7 @@ function Workspace({ user, onSignOut }: WorkspaceProps) {
           onClose={() => setSelectedId(null)}
         />
       )}
-    </main>
+    </>
   )
 }
 

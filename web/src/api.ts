@@ -1,8 +1,11 @@
 import type {
   Address,
   AllocateAddressInput,
+  ApiToken,
   CreateAddressInput,
+  CreateApiTokenInput,
   CreateSubnetInput,
+  CreatedApiToken,
   CurrentUser,
   SignInInput,
   Subnet,
@@ -122,4 +125,20 @@ export function allocateAddress(subnetId: string, input: AllocateAddressInput): 
 
 export function deleteAddress(id: string): Promise<void> {
   return request<void>(`/addresses/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function listTokens(signal?: AbortSignal): Promise<ApiToken[]> {
+  return request<ApiToken[]>('/tokens', { signal })
+}
+
+export function createToken(input: CreateApiTokenInput): Promise<CreatedApiToken> {
+  return request<CreatedApiToken>('/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export function revokeToken(id: string): Promise<void> {
+  return request<void>(`/tokens/${id}`, { method: 'DELETE' })
 }
