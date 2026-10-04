@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE api_token\n        SET revoked_at = now()\n        WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL\n        RETURNING name\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "api_token",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "903d0305b8c4920afd81bf7d4c85cfc94e1d8e71d53c5e7418ce2f6b142b6ecb"
+}

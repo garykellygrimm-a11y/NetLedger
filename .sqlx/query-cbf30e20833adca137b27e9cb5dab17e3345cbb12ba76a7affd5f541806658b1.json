@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM subnet WHERE id = $1 RETURNING cidr AS \"cidr: IpNet\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cidr: IpNet",
+        "type_info": "Cidr",
+        "origin": {
+          "Table": {
+            "table": "subnet",
+            "name": "cidr"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cbf30e20833adca137b27e9cb5dab17e3345cbb12ba76a7affd5f541806658b1"
+}
