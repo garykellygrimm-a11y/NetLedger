@@ -35,11 +35,8 @@ const SESSION_IDLE_TIMEOUT: Duration = Duration::minutes(30);
 const LAST_SEEN_WRITE_INTERVAL: Duration = Duration::seconds(60);
 
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
-    passwords::hash_password(
-        "no such account, keep timing uniform",
-        HashAlgorithm::Argon2id,
-    )
-    .expect("hashing a constant cannot fail")
+    passwords::hash_password(&new_token(), HashAlgorithm::Argon2id)
+        .expect("hashing a random token cannot fail")
 });
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
