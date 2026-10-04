@@ -11,6 +11,7 @@ use crate::{
     addresses::is_reserved_in,
     error::AppError,
     extractors::{AppJson, AppPath},
+    sessions::{CurrentUser, Editor},
 };
 
 const DEADLOCK_DETECTED: &str = "40P01";
@@ -149,7 +150,10 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn list_subnets(State(state): State<AppState>) -> Result<Json<Vec<Subnet>>, AppError> {
+async fn list_subnets(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+) -> Result<Json<Vec<Subnet>>, AppError> {
     let subnets = sqlx::query_as!(
         Subnet,
         r#"
@@ -166,6 +170,7 @@ async fn list_subnets(State(state): State<AppState>) -> Result<Json<Vec<Subnet>>
 
 async fn get_subnet(
     State(state): State<AppState>,
+    _user: CurrentUser,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<Subnet>, AppError> {
     let subnet = sqlx::query_as!(
@@ -186,6 +191,7 @@ async fn get_subnet(
 
 async fn create_subnet(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppJson(input): AppJson<CreateSubnet>,
 ) -> Result<(StatusCode, Json<Subnet>), AppError> {
     input.validate()?;
@@ -290,6 +296,7 @@ async fn create_subnet(
 
 async fn update_subnet(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppPath(id): AppPath<Uuid>,
     AppJson(input): AppJson<UpdateSubnet>,
 ) -> Result<Json<Subnet>, AppError> {
@@ -326,6 +333,7 @@ async fn update_subnet(
 
 async fn delete_subnet(
     State(state): State<AppState>,
+    Editor(_user): Editor,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let mut tx = state.db.begin().await?;
@@ -459,6 +467,8 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
+    use crate::sessions::Role;
+
     async fn send(
         app: &Router,
         method: &str,
@@ -491,6 +501,83 @@ mod tests {
         (status, value)
     }
 
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn anonymous_requests_are_rejected_on_every_route(pool: PgPool) {
+        let app = crate::app(pool);
+        let id = Uuid::nil();
+
+        for (method, uri) in [
+            ("GET", "/api/subnets".to_string()),
+            ("POST", "/api/subnets".to_string()),
+            ("GET", format!("/api/subnets/{id}")),
+            ("PATCH", format!("/api/subnets/{id}")),
+            ("DELETE", format!("/api/subnets/{id}")),
+            ("GET", format!("/api/subnets/{id}/addresses")),
+            ("POST", format!("/api/subnets/{id}/addresses/allocate")),
+            ("POST", "/api/addresses".to_string()),
+            ("GET", format!("/api/addresses/{id}")),
+            ("DELETE", format!("/api/addresses/{id}")),
+        ] {
+            let (status, body) = send(&app, method, &uri, None).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+            assert_eq!(body["error"], "authentication required", "{method} {uri}");
+        }
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn viewers_can_read_but_not_write(pool: PgPool) {
+        let editor = crate::test_support::app_as(pool.clone(), Role::Editor).await;
+        let (_, subnet) = create(&editor, json!({ "cidr": "10.0.0.0/24", "name": "Office" })).await;
+        let uri = format!("/api/subnets/{}", subnet["id"].as_str().unwrap());
+
+        let viewer = crate::test_support::app_as(pool, Role::Viewer).await;
+
+        assert_eq!(
+            send(&viewer, "GET", "/api/subnets", None).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(send(&viewer, "GET", &uri, None).await.0, StatusCode::OK);
+
+        let (status, body) =
+            create(&viewer, json!({ "cidr": "10.1.0.0/24", "name": "Nope" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "insufficient permissions");
+        assert_eq!(
+            send(&viewer, "PATCH", &uri, Some(json!({ "name": "Nope" })))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(&viewer, "DELETE", &uri, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                &viewer,
+                "POST",
+                "/api/addresses",
+                Some(json!({ "address": "10.0.0.5" }))
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                &viewer,
+                "POST",
+                &format!("{uri}/addresses/allocate"),
+                Some(json!({}))
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+
+        assert_eq!(send(&editor, "GET", &uri, None).await.1["name"], "Office");
+    }
+
     async fn create(app: &Router, body: Value) -> (StatusCode, Value) {
         send(app, "POST", "/api/subnets", Some(body)).await
     }
@@ -502,7 +589,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn create_returns_201_and_the_new_subnet(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = create(
             &app,
@@ -520,7 +607,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn duplicate_cidr_returns_409(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let subnet = json!({ "cidr": "10.2.0.0/24", "name": "First" });
 
         create(&app, subnet.clone()).await;
@@ -532,7 +619,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn host_bits_return_400_with_the_network_address(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = create(&app, json!({ "cidr": "10.2.0.5/24", "name": "Bad" })).await;
 
@@ -542,7 +629,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn out_of_range_vlan_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, _) = create(
             &app,
@@ -555,7 +642,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn blank_name_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = create(&app, json!({ "cidr": "10.5.0.0/24", "name": "   " })).await;
 
@@ -565,7 +652,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn unknown_field_returns_422(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = create(
             &app,
@@ -579,7 +666,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn list_is_ordered_by_network_address(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         for cidr in ["192.168.1.0/24", "10.0.0.0/8", "9.0.0.0/8"] {
             create(&app, json!({ "cidr": cidr, "name": cidr })).await;
         }
@@ -598,7 +685,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn get_unknown_subnet_returns_404(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = send(
             &app,
@@ -614,7 +701,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn invalid_id_returns_400_as_json(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = send(&app, "GET", "/api/subnets/not-a-uuid", None).await;
 
@@ -624,7 +711,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn delete_returns_204_then_the_subnet_is_gone(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(&app, json!({ "cidr": "10.7.0.0/24", "name": "Temp" })).await;
         let uri = format!("/api/subnets/{}", created["id"].as_str().unwrap());
 
@@ -641,7 +728,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn deleting_a_subnet_releases_its_children_to_its_parent(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, root) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Root" })).await;
         let (_, middle) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Middle" })).await;
         let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
@@ -660,7 +747,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn ipv4_and_ipv6_networks_never_overlap(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (v4, _) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "IPv4" })).await;
         let (v6, _) = create(&app, json!({ "cidr": "fd00::/8", "name": "IPv6" })).await;
@@ -692,7 +779,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn parent_id_is_not_accepted(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, _) = create(
             &app,
@@ -709,7 +796,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_subnet_inside_an_existing_one_becomes_its_child(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, datacenter) =
             create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Datacenter" })).await;
 
@@ -721,7 +808,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_subnet_is_placed_under_the_smallest_containing_subnet(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         create(&app, json!({ "cidr": "10.0.0.0/16", "name": "Root" })).await;
         let (_, child) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Child" })).await;
 
@@ -733,7 +820,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_larger_subnet_adopts_existing_subnets_inside_it(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, first) = create(&app, json!({ "cidr": "10.0.0.0/16", "name": "First" })).await;
         let (_, second) = create(&app, json!({ "cidr": "10.1.0.0/16", "name": "Second" })).await;
         let (_, outside) = create(&app, json!({ "cidr": "192.168.0.0/24", "name": "Lab" })).await;
@@ -750,7 +837,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn a_middle_subnet_is_placed_between_parent_and_child(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, root) = create(&app, json!({ "cidr": "10.0.0.0/8", "name": "Root" })).await;
         let (_, leaf) = create(&app, json!({ "cidr": "10.0.1.0/24", "name": "Leaf" })).await;
         assert_eq!(leaf["parent_id"], root["id"]);
@@ -765,7 +852,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn concurrent_nested_creates_are_placed_consistently(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         for round in 0..20 {
             let larger = format!("10.{round}.0.0/16");
@@ -792,7 +879,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_updates_only_the_fields_sent(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(
             &app,
             json!({
@@ -822,7 +909,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_with_null_vlan_id_clears_it(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(
             &app,
             json!({ "cidr": "10.8.0.0/24", "name": "Voice", "vlan_id": 100 }),
@@ -843,7 +930,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_with_no_fields_returns_400(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
 
         let (status, body) = patch(&app, created["id"].as_str().unwrap(), json!({})).await;
@@ -854,7 +941,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_rejects_invalid_values(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
         let id = created["id"].as_str().unwrap();
 
@@ -872,7 +959,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_unknown_subnet_returns_404(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
 
         let (status, body) = patch(
             &app,
@@ -887,7 +974,7 @@ mod tests {
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
     async fn patch_cannot_change_cidr_yet(pool: PgPool) {
-        let app = crate::app(pool);
+        let app = crate::test_support::app_as(pool, Role::Editor).await;
         let (_, created) = create(&app, json!({ "cidr": "10.8.0.0/24", "name": "Voice" })).await;
 
         let (status, _) = patch(

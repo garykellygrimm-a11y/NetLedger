@@ -42,18 +42,24 @@ Each version below ships as a series of patch releases as its pieces land.
 
 ### 0.6: Authentication core
 
-NetLedger cannot be deployed until it has this. Today, anyone who can reach the server can change anything. See [ADR 0004](adr/0004-authentication-core.md).
+NetLedger could not be deployed until it had this: before 0.6.0, anyone who could reach the server could change anything. See [ADR 0004](adr/0004-authentication-core.md).
+
+Shipped in 0.6.0:
 
 - User accounts, each with one or more sign-in identities, so new sign-in methods attach to existing accounts
-- Local password sign-in following NIST SP 800-63B Revision 4
+- Local password sign-in following NIST SP 800-63B Revision 4, with rate-limited failed attempts
 - Configurable password hashing: Argon2id by default, or PBKDF2 with HMAC-SHA-256 where FIPS 140 is required
-- Server-side browser sessions and API tokens for automation, such as provisioning pipelines that allocate addresses
-- Roles: viewer, editor, and administrator
-- An audit log of who changed what and when
-- Built-in HTTPS
-- No default credentials; the first administrator is created with a setup command
-- Address status, so an address can be marked reserved as well as in use
-- Address counts on the subnet list, so the web UI can show utilization for every subnet at once
+- Server-side browser sessions that end on sign-out, after 12 hours, or after 30 minutes idle
+- Roles: viewer, editor, and administrator, checked on every API route
+- An audit log of who changed what, when, from where, and with what outcome
+- No default credentials; the first administrator is created with the `create-admin` command
+
+Planned as 0.6 patch releases:
+
+- 0.6.1: API tokens for automation, such as provisioning pipelines that allocate addresses
+- 0.6.2: Address status, so an address can be marked reserved as well as in use, and address counts on the subnet list, so the web UI can show utilization for every subnet at once
+- 0.6.3: Built-in HTTPS
+- 0.6.4: Account management in the web UI for administrators (create, disable, reset passwords, end sessions, read the audit log), and a first-run setup page that creates the first administrator in the browser using a one-time token printed by the server, as an alternative to `create-admin`
 
 ### 0.7: Smart card sign-in through an F5
 
@@ -84,6 +90,7 @@ Tier 1 discovery, which needs no agents and no credentials:
 ### 0.10: Packaging, signing, and documentation
 
 - An RPM for RHEL-family systems and a Windows service
+- A `setup` command that walks through database connection, bind address, trusted proxies, migrations, and the first administrator, with every prompt also available as a flag so installers and configuration management can run it unattended
 - Signed releases: Authenticode-signed Windows binaries and installer, GPG-signed RPMs, and documented verification steps. IdenTrust is the likely certificate vendor, pending confirmation of which certificates target environments accept. Releases are designed so organizations can verify and re-sign them with their own certificates.
 - A software bill of materials (SBOM) and build provenance for each release
 - A documented, STIG-aligned way to deploy PostgreSQL for NetLedger

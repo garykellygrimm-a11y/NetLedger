@@ -50,6 +50,21 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.94"
+
+      - name: Build with the minimum supported Rust version
+        run: cargo build --workspace --locked
+
   web:
     name: web
     runs-on: ubuntu-latest
@@ -72,6 +87,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build

@@ -7,6 +7,7 @@ type Props = {
   subnets: Subnet[]
   deletingId: string | null
   selectedId: string | null
+  canEdit: boolean
   onSelect: (subnet: Subnet) => void
   onDelete: (subnet: Subnet) => void
   onUpdated: () => void
@@ -17,6 +18,7 @@ export function SubnetTable({
   deletingId,
   selectedId,
   onSelect,
+  canEdit,
   onDelete,
   onUpdated,
 }: Props) {
@@ -37,9 +39,11 @@ export function SubnetTable({
           <th scope="col">Name</th>
           <th scope="col">VLAN</th>
           <th scope="col">Description</th>
-          <th scope="col">
-            <span className="visually-hidden">Actions</span>
-          </th>
+          {canEdit && (
+            <th scope="col">
+              <span className="visually-hidden">Actions</span>
+            </th>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -77,26 +81,28 @@ export function SubnetTable({
               <td>{subnet.name}</td>
               <td>{subnet.vlan_id ?? '—'}</td>
               <td>{subnet.description}</td>
-              <td className="actions">
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setEditingId(subnet.id)}
-                  disabled={busy}
-                  aria-label={`Edit ${subnet.cidr}`}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => onDelete(subnet)}
-                  disabled={busy}
-                  aria-label={`Delete ${subnet.cidr}`}
-                >
-                  {deletingId === subnet.id ? 'Deleting…' : 'Delete'}
-                </button>
-              </td>
+              {canEdit && (
+                <td className="actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setEditingId(subnet.id)}
+                    disabled={busy}
+                    aria-label={`Edit ${subnet.cidr}`}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => onDelete(subnet)}
+                    disabled={busy}
+                    aria-label={`Delete ${subnet.cidr}`}
+                  >
+                    {deletingId === subnet.id ? 'Deleting…' : 'Delete'}
+                  </button>
+                </td>
+              )}
             </tr>
           ),
         )}

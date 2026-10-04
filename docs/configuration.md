@@ -8,6 +8,7 @@ NetLedger is configured entirely through environment variables. On startup, the 
 | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes | None | PostgreSQL connection URL |
 | `NETLEDGER_BIND_ADDR` | No | `127.0.0.1:8080` | Address and port the HTTP server listens on |
+| `NETLEDGER_PASSWORD_HASH` | No | `argon2id` | Algorithm for hashing account passwords: `argon2id` or `pbkdf2-sha256` |
 | `RUST_LOG` | No | `netledger_server=info` | Log filter |
 
 ### `DATABASE_URL`
@@ -36,6 +37,14 @@ An IP address and port, such as `127.0.0.1:8080` or `0.0.0.0:8080`. The server s
 
 NetLedger has no authentication yet, and its API can create, change, and delete subnets and addresses (see [api.md](api.md)). Do not bind it to a non-loopback address on an untrusted network.
 
+### `NETLEDGER_PASSWORD_HASH`
+
+The algorithm used to hash account passwords. Either `argon2id` (the default) or `pbkdf2-sha256`. Any other value stops the server at startup with `NETLEDGER_PASSWORD_HASH must be argon2id or pbkdf2-sha256`.
+
+Argon2id is the stronger general-purpose choice and is recommended unless policy requires otherwise. PBKDF2 with HMAC-SHA-256 is provided for environments that require FIPS 140-approved algorithms. Choosing it makes password hashing use an approved algorithm; it does not make every cryptographic operation in NetLedger FIPS-validated.
+
+Each stored hash records its own algorithm and parameters, so changing this setting does not invalidate existing passwords. A password hashed with the previous algorithm is rehashed with the configured one the next time its owner signs in successfully.
+
 ### `RUST_LOG`
 
 A `tracing-subscriber` filter directive. For example, `netledger_server=debug` enables debug logging. If unset or invalid, the default is `netledger_server=info`.
@@ -52,3 +61,19 @@ cargo run -p netledger-server
 | Variable | Description |
 | --- | --- |
 | `SQLX_OFFLINE` | When `true`, checked queries compile against the committed `.sqlx/` metadata instead of connecting to `DATABASE_URL`. CI sets this. |
+
+## Commands
+
+The server binary accepts an optional command. With no command, it starts the HTTP server. Every command reads the same environment variables, connects to the database, and applies pending migrations before running.
+
+### `create-admin <username>`
+
+Creates an account with the administrator role and a local password:
+
+```powershell
+netledger-server create-admin gary
+```
+
+The password is prompted for twice without being displayed; it is never accepted as a command-line argument. Usernames are stored in lowercase and may contain only letters, digits, `.`, `_`, and `-`. Passwords must be 15 to 256 characters and must not appear on the built-in list of common passwords or contain the username.
+
+NetLedger ships with no default credentials, so this command is how the first administrator is created. It can also be run later to regain access if every administrator is locked out. Running it requires the same access as running the server. Each use writes an audit log entry recording the operating system user and host that ran it.

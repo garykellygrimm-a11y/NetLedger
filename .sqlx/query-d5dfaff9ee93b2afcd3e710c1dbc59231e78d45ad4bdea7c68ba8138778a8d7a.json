@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT outcome, details ->> 'os_user' AS os_user, details ->> 'hostname' AS hostname\n            FROM audit_log\n            WHERE target_id = $1 AND action = 'account.create'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outcome",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "os_user",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "hostname",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "d5dfaff9ee93b2afcd3e710c1dbc59231e78d45ad4bdea7c68ba8138778a8d7a"
+}

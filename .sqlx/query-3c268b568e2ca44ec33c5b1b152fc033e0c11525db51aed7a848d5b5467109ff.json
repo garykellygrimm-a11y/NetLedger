@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO audit_log (actor_id, actor_username, source_addr, action, outcome, target_type, details)\n        SELECT a.id, $1, $2, 'session.create', 'failure', 'account', jsonb_build_object('reason', $3::text)\n        FROM (SELECT 1) AS one\n        LEFT JOIN account a ON a.username = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Inet",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c268b568e2ca44ec33c5b1b152fc033e0c11525db51aed7a848d5b5467109ff"
+}

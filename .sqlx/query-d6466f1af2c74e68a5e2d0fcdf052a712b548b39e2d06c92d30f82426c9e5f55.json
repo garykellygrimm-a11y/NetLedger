@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.id, a.username, a.role, a.disabled_at, i.id AS identity_id, i.secret_hash\n        FROM account a\n        JOIN identity i ON i.account_id = a.id AND i.kind = 'password'\n        WHERE a.username = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "account",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "disabled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "account",
+            "name": "disabled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identity",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "secret_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identity",
+            "name": "secret_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "d6466f1af2c74e68a5e2d0fcdf052a712b548b39e2d06c92d30f82426c9e5f55"
+}

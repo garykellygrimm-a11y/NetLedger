@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::rejection::{JsonRejection, PathRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -10,6 +10,9 @@ use tracing::error;
 pub enum AppError {
     BadRequest(String),
     NotFound,
+    Unauthorized,
+    Forbidden,
+    TooManyRequests { retry_after_secs: u64 },
     Conflict(String),
     Rejected { status: StatusCode, message: String },
     Database(sqlx::Error),
@@ -25,6 +28,25 @@ impl IntoResponse for AppError {
         let (status, message) = match self {
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            AppError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "authentication required".to_string(),
+            ),
+            AppError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "insufficient permissions".to_string(),
+            ),
+            AppError::TooManyRequests { retry_after_secs } => {
+                let body = Json(ErrorBody {
+                    error: "too many failed attempts; try again later".to_string(),
+                });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                    body,
+                )
+                    .into_response();
+            }
             AppError::Conflict(message) => (StatusCode::CONFLICT, message),
             AppError::Rejected { status, message } => (status, message),
             AppError::Database(err) => {
