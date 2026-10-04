@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, audit,
     error::AppError,
     extractors::{AppJson, AppPath},
-    sessions::{CurrentUser, Editor},
+    sessions::{ClientAddr, CurrentUser, Editor},
     subnets::PLACEMENT_LOCK_KEY,
 };
 
@@ -101,7 +101,8 @@ pub(crate) fn is_reserved_in(subnet: IpNet, address: IpAddr) -> bool {
 
 async fn create_address(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppJson(input): AppJson<CreateAddress>,
 ) -> Result<(StatusCode, Json<Address>), AppError> {
     input.validate()?;
@@ -156,6 +157,17 @@ async fn create_address(
     .fetch_one(&mut *tx)
     .await
     .map_err(map_address_error)?;
+
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "address.create",
+        "address",
+        address.id,
+        serde_json::json!({ "address": address.address, "subnet_id": address.subnet_id, "hostname": address.hostname }),
+    )
+    .await?;
 
     tx.commit().await?;
 
@@ -214,7 +226,8 @@ fn first_free_address(
 
 async fn allocate_address(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppPath(subnet_id): AppPath<Uuid>,
     AppJson(input): AppJson<AllocateAddress>,
 ) -> Result<(StatusCode, Json<Address>), AppError> {
@@ -270,6 +283,17 @@ async fn allocate_address(
     .fetch_one(&mut *tx)
     .await
     .map_err(map_address_error)?;
+
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "address.allocate",
+        "address",
+        address.id,
+        serde_json::json!({ "address": address.address, "subnet_id": address.subnet_id, "hostname": address.hostname }),
+    )
+    .await?;
 
     tx.commit().await?;
 
@@ -333,16 +357,32 @@ async fn list_subnet_addresses(
 
 async fn delete_address(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let result = sqlx::query!("DELETE FROM address WHERE id = $1", id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.begin().await?;
 
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
+    let deleted = sqlx::query!(
+        r#"DELETE FROM address WHERE id = $1 RETURNING address AS "address: IpAddr", subnet_id"#,
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "address.delete",
+        "address",
+        id,
+        serde_json::json!({ "address": deleted.address, "subnet_id": deleted.subnet_id }),
+    )
+    .await?;
+
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,4 +1,5 @@
 mod addresses;
+mod audit;
 mod config;
 mod error;
 mod extractors;
@@ -8,6 +9,7 @@ mod setup;
 mod subnets;
 #[cfg(test)]
 mod test_support;
+mod tokens;
 mod web;
 
 use std::{net::SocketAddr, time::Duration};
@@ -48,6 +50,7 @@ fn app_with(
     trusted_proxies: Vec<IpNet>,
 ) -> Router {
     let api = sessions::router()
+        .merge(tokens::router())
         .merge(subnets::router())
         .merge(addresses::router())
         .fallback(api_not_found)

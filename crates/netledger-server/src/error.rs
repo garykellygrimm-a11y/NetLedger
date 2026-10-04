@@ -12,6 +12,7 @@ pub enum AppError {
     NotFound,
     Unauthorized,
     Forbidden,
+    SessionRequired,
     TooManyRequests { retry_after_secs: u64 },
     Conflict(String),
     Rejected { status: StatusCode, message: String },
@@ -35,6 +36,10 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (
                 StatusCode::FORBIDDEN,
                 "insufficient permissions".to_string(),
+            ),
+            AppError::SessionRequired => (
+                StatusCode::FORBIDDEN,
+                "this action requires signing in with a password, not an API token".to_string(),
             ),
             AppError::TooManyRequests { retry_after_secs } => {
                 let body = Json(ErrorBody {
