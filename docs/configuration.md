@@ -9,6 +9,8 @@ NetLedger is configured entirely through environment variables. On startup, the 
 | `DATABASE_URL` | Yes | None | PostgreSQL connection URL |
 | `NETLEDGER_BIND_ADDR` | No | `127.0.0.1:8080` | Address and port the HTTP server listens on |
 | `NETLEDGER_PASSWORD_HASH` | No | `argon2id` | Algorithm for hashing account passwords: `argon2id` or `pbkdf2-sha256` |
+| `NETLEDGER_COOKIE_SECURE` | No | `true` | Whether the session cookie is marked `Secure` (sent over HTTPS only) |
+| `NETLEDGER_TRUSTED_PROXIES` | No | None | Addresses or CIDR ranges of reverse proxies whose `X-Forwarded-For` header is trusted |
 | `RUST_LOG` | No | `netledger_server=info` | Log filter |
 
 ### `DATABASE_URL`
@@ -44,6 +46,20 @@ The algorithm used to hash account passwords. Either `argon2id` (the default) or
 Argon2id is the stronger general-purpose choice and is recommended unless policy requires otherwise. PBKDF2 with HMAC-SHA-256 is provided for environments that require FIPS 140-approved algorithms. Choosing it makes password hashing use an approved algorithm; it does not make every cryptographic operation in NetLedger FIPS-validated.
 
 Each stored hash records its own algorithm and parameters, so changing this setting does not invalidate existing passwords. A password hashed with the previous algorithm is rehashed with the configured one the next time its owner signs in successfully.
+
+### `NETLEDGER_COOKIE_SECURE`
+
+Whether the browser session cookie carries the `Secure` attribute, which tells browsers to send it only over HTTPS. The default is `true`, and any value other than `true` or `false` stops the server at startup.
+
+Keep the default in every deployment. Browsers treat `localhost` and `127.0.0.1` as secure origins, so development against `http://127.0.0.1:8080` works without changing it. Set it to `false` only for a deployment reached over plain HTTP on a real hostname, where the default would make sign-in impossible. The server logs a warning at startup when it is `false`, because the session cookie can then be read by anyone on the network path.
+
+### `NETLEDGER_TRUSTED_PROXIES`
+
+A comma-separated list of IP addresses or CIDR ranges, such as `10.0.0.5` or `10.0.0.0/24, 2001:db8::/32`. Requests arriving from one of these addresses are treated as having passed through a reverse proxy, and the client address is taken from the rightmost entry in the `X-Forwarded-For` header that is not itself a trusted proxy. The client address is recorded in the audit log and used for rate limiting failed sign-ins.
+
+Requests from any other address use the address of the connection itself, and `X-Forwarded-For` is ignored, so clients cannot spoof their address by sending the header. When this variable is empty, which is the default, the header is never trusted. Set it to the address of the F5 BIG-IP or other proxy in front of NetLedger; otherwise every request behind the proxy appears to come from the proxy, and a lockout caused by one user's failed attempts affects everyone.
+
+An entry that is not a valid address or range stops the server at startup.
 
 ### `RUST_LOG`
 
