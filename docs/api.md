@@ -1,6 +1,177 @@
 # HTTP API
 
-All endpoints are unauthenticated in the current version, including `POST /api/subnets`, `PATCH /api/subnets/{id}`, `DELETE /api/subnets/{id}`, `POST /api/addresses`, `POST /api/subnets/{id}/addresses/allocate`, and `DELETE /api/addresses/{id}`, which write to the database. Anyone who can reach the server can create, change, and delete subnets and addresses. Requests and responses use JSON unless noted.
+Every endpoint under `/api` except signing in requires a signed-in account, either through a browser session or an API token. Requests and responses use JSON unless noted.
+
+## Authentication
+
+NetLedger authenticates accounts. A browser signs in with a username and password and receives a session cookie; scripts and pipelines use API tokens. The first account is created with the `create-admin` command described in [Configuration](configuration.md#create-admin-username); there are no default credentials.
+
+### Roles
+
+Every account has one role, and every endpoint names the role it needs:
+
+| Role | Can |
+| --- | --- |
+| `viewer` | Read subnets and addresses |
+| `editor` | Everything a viewer can, and create, change, and delete subnets and addresses |
+| `administrator` | Everything an editor can. Account management is not available through the API yet. |
+
+Any signed-in account can manage its own API tokens. A request without valid credentials gets `401 Unauthorized`. A request from an account whose role is not sufficient gets `403 Forbidden`. The role check runs before the request body is read, so a viewer sending an invalid body to a write endpoint gets `403`, not `400`.
+
+### Browser sessions
+
+Signing in sets a cookie named `netledger_session`. It is `HttpOnly` (not readable by scripts), `SameSite=Strict` (never sent on requests that start on another site), and `Secure` unless [`NETLEDGER_COOKIE_SECURE`](configuration.md#netledger_cookie_secure) is `false`. The cookie's value is a random token; the server stores only a hash of it.
+
+A session ends when any of these happen:
+
+- `DELETE /api/session` is called.
+- 12 hours have passed since sign-in.
+- 30 minutes have passed since the session's last request.
+- The account is disabled.
+
+After that, the next request gets `401` and the client must sign in again. The web UI returns to the sign-in page when that happens.
+
+Every response under `/api` carries `Cache-Control: no-store`, so browsers and proxies never cache data that was served to one account.
+
+### API tokens
+
+An API token lets a script act as the account that created it, with that account's role. Send it in the `Authorization` header:
+
+```text
+Authorization: Bearer nlt_<43 characters>
+```
+
+Tokens begin with `nlt_` so secret scanners can recognize a leaked one. A token's value is returned once, when it is created; NetLedger stores only a SHA-256 hash of it, so a lost token cannot be recovered, only revoked and replaced. A token stops working when it is revoked, when it expires, or when its account is disabled. When a request carries both a token and a session cookie, the token is used.
+
+Tokens can read and change subnets and addresses like any other credential, but three actions require a password session: creating tokens, revoking tokens, and signing out. A token that tries one of them gets `403` with `this action requires signing in with a password, not an API token`. This means a leaked token cannot be used to mint more tokens.
+
+Every change made with a token is recorded in the audit log with the token's ID, so changes can be traced to the token that made them, not only to its account.
+
+PowerShell:
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:NETLEDGER_TOKEN" }
+Invoke-RestMethod -Uri https://netledger.example.internal/api/subnets -Headers $headers
+```
+
+curl:
+
+```bash
+curl -H "Authorization: Bearer $NETLEDGER_TOKEN" https://netledger.example.internal/api/subnets
+```
+
+Keep tokens in a secret store or an environment variable, never in a script or a command line that is saved to history.
+
+### Signing in from a script
+
+For interactive scripts, a password session also works. PowerShell keeps the cookie in a session variable:
+
+```powershell
+$credential = Get-Credential
+$body = @{ username = $credential.UserName; password = $credential.GetNetworkCredential().Password } | ConvertTo-Json
+Invoke-WebRequest -Method Post -Uri https://netledger.example.internal/api/session `
+    -ContentType application/json -Body $body -SessionVariable session | Out-Null
+Invoke-RestMethod -Uri https://netledger.example.internal/api/subnets -WebSession $session
+```
+
+### `POST /api/session`
+
+Signs in. This is the only endpoint under `/api` that does not require credentials.
+
+```json
+{
+  "username": "gary",
+  "password": "correct horse battery staple"
+}
+```
+
+The username is case-insensitive and surrounding whitespace is ignored. The password is compared exactly, after Unicode normalization.
+
+- `201 Created` with the current-user object below, and a `Set-Cookie` header carrying the session cookie
+- `401 Unauthorized` with `authentication required` if the username does not exist, the password is wrong, or the account is disabled. The three cases are indistinguishable from the response, by design.
+- `429 Too Many Requests` with `too many failed attempts; try again later` and a `Retry-After` header giving the number of seconds to wait. This happens after 10 failed attempts for one username, or 50 failed attempts from one client address, within 15 minutes. The limit applies even when the password is correct. Each failed attempt, including ones refused by the limit, is recorded in the audit log with its reason.
+
+### `GET /api/session`
+
+Returns the account behind the request's credentials, whether a session cookie or an API token.
+
+```json
+{
+  "account_id": "3f0f2b0e-5d4a-4c9b-9a6e-2d1c0b7a8f11",
+  "username": "gary",
+  "role": "administrator"
+}
+```
+
+- `200 OK` with the current-user object
+- `401 Unauthorized` if there are no valid credentials
+
+### `DELETE /api/session`
+
+Signs out: deletes the session on the server and clears the cookie. Requires a password session.
+
+- `204 No Content`
+- `401 Unauthorized` if there was no valid session to end
+- `403 Forbidden` if the request used an API token
+
+### The token object
+
+```json
+{
+  "id": "c7e6a1f2-1b8d-4c0e-9a3f-5d2b7e4f8a10",
+  "name": "Provisioning pipeline",
+  "hint": "BRBQ",
+  "created_at": "2026-10-04T23:12:11.123456Z",
+  "expires_at": null,
+  "last_used_at": "2026-10-05T08:00:02.551233Z",
+  "revoked_at": null
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string (UUID) | Unique identifier |
+| `name` | string | A label chosen when the token was created |
+| `hint` | string | The last four characters of the token, to tell tokens apart |
+| `created_at` | string | RFC 3339 timestamp, UTC |
+| `expires_at` | string or null | When the token stops working, or null if it never expires |
+| `last_used_at` | string or null | When the token last authenticated a request, updated at most once a minute; null if never used |
+| `revoked_at` | string or null | When the token was revoked, or null if it is still active |
+
+### `GET /api/tokens`
+
+Role: any. Lists the requesting account's tokens, newest first, including revoked and expired ones. Tokens belonging to other accounts are never listed, even for administrators.
+
+- `200 OK` with an array of token objects
+
+### `POST /api/tokens`
+
+Role: any, with a password session. Creates a token for the requesting account.
+
+```json
+{
+  "name": "Provisioning pipeline",
+  "expires_in_days": 90
+}
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `name` | Yes | 1 to 100 characters after trimming whitespace |
+| `expires_in_days` | No | 1 through 365. Omit it for a token that never expires. |
+
+- `201 Created` with the token object plus a `secret` field holding the token itself. This is the only time the token's value is returned.
+- `400 Bad Request` if a rule above is broken
+- `403 Forbidden` if the request used an API token
+- `422 Unprocessable Entity` if the body has unknown fields
+
+### `DELETE /api/tokens/{id}`
+
+Role: any, with a password session. Revokes one of the requesting account's tokens. The token stays in the list with `revoked_at` set.
+
+- `204 No Content`
+- `403 Forbidden` if the request used an API token
+- `404 Not Found` if the token does not exist, belongs to another account, or is already revoked
 
 ## Health
 
@@ -49,13 +220,13 @@ Monitoring should restart the process only when `/health` fails. When only `/hea
 
 ### `GET /api/subnets`
 
-Lists all subnets, ordered by network address. There is no pagination or filtering yet.
+Role: viewer. Lists all subnets, ordered by network address. There is no pagination or filtering yet.
 
 - `200 OK` with an array of subnet objects
 
 ### `GET /api/subnets/{id}`
 
-Returns one subnet.
+Role: viewer. Returns one subnet.
 
 - `200 OK` with a subnet object
 - `404 Not Found` if no subnet has that ID
@@ -63,7 +234,7 @@ Returns one subnet.
 
 ### `POST /api/subnets`
 
-Creates a subnet. The request body must be a JSON object sent with `Content-Type: application/json`.
+Role: editor. Creates a subnet. The request body must be a JSON object sent with `Content-Type: application/json`.
 
 ```json
 {
@@ -129,7 +300,7 @@ Validation messages returned in `error`:
 
 ### `PATCH /api/subnets/{id}`
 
-Changes a subnet's `name`, `description`, and `vlan_id`. The request body must be a JSON object sent with `Content-Type: application/json`. It follows JSON Merge Patch semantics ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)): a field that is omitted keeps its current value, a field with a value replaces the current value, and `"vlan_id": null` clears the VLAN.
+Role: editor. Changes a subnet's `name`, `description`, and `vlan_id`. The request body must be a JSON object sent with `Content-Type: application/json`. It follows JSON Merge Patch semantics ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)): a field that is omitted keeps its current value, a field with a value replaces the current value, and `"vlan_id": null` clears the VLAN.
 
 For example, this request changes the description of the `Servers` subnet shown above and clears its VLAN, leaving its name unchanged:
 
@@ -197,7 +368,7 @@ Validation messages returned in `error`:
 
 ### `DELETE /api/subnets/{id}`
 
-Deletes one subnet. Its child subnets are not deleted; they move up to the deleted subnet's parent, or to the top level if the deleted subnet had no parent. Their `updated_at` is set to the current time. Subnets further down keep their parents.
+Role: editor. Deletes one subnet. Its child subnets are not deleted; they move up to the deleted subnet's parent, or to the top level if the deleted subnet had no parent. Their `updated_at` is set to the current time. Subnets further down keep their parents.
 
 For example, with `10.0.0.0/8` containing `10.0.0.0/16`, which contains `10.0.1.0/24`, deleting `10.0.0.0/16` makes `10.0.0.0/8` the parent of `10.0.1.0/24`.
 
@@ -251,7 +422,7 @@ There is no endpoint to edit an address yet.
 
 ### `POST /api/addresses`
 
-Records an address. The request body must be a JSON object sent with `Content-Type: application/json`.
+Role: editor. Records an address. The request body must be a JSON object sent with `Content-Type: application/json`.
 
 ```json
 {
@@ -298,7 +469,7 @@ Validation messages returned in `error`:
 
 ### `GET /api/addresses/{id}`
 
-Returns one address.
+Role: viewer. Returns one address.
 
 - `200 OK` with an address object
 - `404 Not Found` if no address has that ID
@@ -306,7 +477,7 @@ Returns one address.
 
 ### `GET /api/subnets/{id}/addresses`
 
-Lists the addresses recorded in one subnet, in numeric order. Addresses in the subnet's child subnets are not included; list them through each child. There is no pagination or filtering yet.
+Role: viewer. Lists the addresses recorded in one subnet, in numeric order. Addresses in the subnet's child subnets are not included; list them through each child. There is no pagination or filtering yet.
 
 - `200 OK` with an array of address objects, empty if the subnet has none
 - `404 Not Found` if no subnet has that ID
@@ -314,7 +485,7 @@ Lists the addresses recorded in one subnet, in numeric order. Addresses in the s
 
 ### `POST /api/subnets/{id}/addresses/allocate`
 
-Records and returns the lowest free address in the subnet. The request body must be a JSON object sent with `Content-Type: application/json`. Send `{}` to allocate an address without details, or include a hostname and description:
+Role: editor. Records and returns the lowest free address in the subnet. The request body must be a JSON object sent with `Content-Type: application/json`. Send `{}` to allocate an address without details, or include a hostname and description:
 
 ```json
 {
@@ -362,7 +533,7 @@ Validation messages returned in `error`:
 
 ### `DELETE /api/addresses/{id}`
 
-Deletes one address.
+Role: editor. Deletes one address.
 
 - `204 No Content` with no response body
 - `404 Not Found` if no address has that ID
@@ -414,10 +585,18 @@ The health checks and the web UI return plain-text or empty error bodies, descri
 | Status | `error` | Meaning |
 | --- | --- | --- |
 | `400` | A description of the problem | A validation rule failed, the request body is not valid JSON, or a path parameter such as `{id}` could not be parsed |
+| `401` | `authentication required` | There are no valid credentials, or sign-in failed |
+| `403` | `insufficient permissions` | The account's role does not allow this request |
+| `403` | `this action requires signing in with a password, not an API token` | The request used an API token for an action that needs a password session |
 | `404` | `not found` | The requested resource does not exist, or no endpoint matches a path under `/api/` |
 | `409` | A description of the conflict | The request conflicts with existing data |
 | `415` | A description of the problem | The request body is not declared as JSON |
 | `422` | A description of the problem | The request body does not match the expected shape |
+| `429` | `too many failed attempts; try again later` | Sign-in is rate limited; see `POST /api/session`. Carries a `Retry-After` header. |
 | `500` | `internal server error` | An unexpected server or database error. Details are written to the server log, never returned to the client. |
 
 For malformed request bodies and path parameters (the `400` body and path cases, `415`, and `422`), the status code and `error` text are produced by the Axum framework and may change when Axum is upgraded. Do not match on their exact wording.
+
+## Audit log
+
+Every sign-in attempt, sign-out, token creation and revocation, and every change to a subnet or address is recorded in the `audit_log` database table, in the same transaction as the change, so a change cannot be saved without its record. Each record holds the time, the account, the credential used (a session or token ID), the client address, the action, whether it succeeded, the affected object, and a summary of the change. The table has no API yet; read it with SQL. Database triggers reject updates, deletes, and truncation, so records cannot be altered through ordinary queries.

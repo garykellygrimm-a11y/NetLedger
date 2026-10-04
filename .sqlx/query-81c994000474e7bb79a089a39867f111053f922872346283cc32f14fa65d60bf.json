@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM address WHERE id = $1 RETURNING address AS \"address: IpAddr\", subnet_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address: IpAddr",
+        "type_info": "Inet",
+        "origin": {
+          "Table": {
+            "table": "address",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subnet_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "address",
+            "name": "subnet_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "81c994000474e7bb79a089a39867f111053f922872346283cc32f14fa65d60bf"
+}

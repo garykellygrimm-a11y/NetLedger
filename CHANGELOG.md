@@ -8,7 +8,7 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Features
 
-- add accounts, identities, sessions, API tokens, and an append-only audit log
+- add accounts, identities, sessions, and an append-only audit log
 - hash passwords and create the first administrator with a setup command
 - record outcome, source address, credential, and operator in the audit log
 - sign in with a password and track server-side sessions

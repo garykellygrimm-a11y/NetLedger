@@ -198,6 +198,10 @@ Then confirm:
 - If you changed a checked query or the schema, you regenerated and committed `.sqlx/`.
 - `git status` does not list `.env` or any other file containing credentials.
 
+### Merging pull requests
+
+Merge pull requests with a merge commit, not a squash or rebase merge. Knope builds the changelog from the commit messages on `main`, so each `feat` and `fix` commit in a pull request becomes its own changelog entry only if the commits reach `main` unchanged. Because of this, every commit message must describe what that commit actually contains: a message that describes planned work becomes a false release note. Before merging, read the pull request's commit list as if it were the changelog.
+
 ### Documentation
 
 Pull requests that change `crates/`, `web/`, `migrations/`, or the Compose file must also update `README.md`, `CONTRIBUTING.md`, or a file under `docs/`. The `docs-check` workflow enforces this. Changes limited to `web/package.json` and `web/package-lock.json`, such as dependency updates, are exempt. For changes with no user-facing effect, such as formatting or internal refactors, apply the `no-docs-needed` label instead.

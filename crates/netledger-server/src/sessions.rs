@@ -23,7 +23,7 @@ use crate::{
     error::AppError,
     extractors::AppJson,
     passwords::{self, HashAlgorithm},
-    setup,
+    setup, tokens,
 };
 
 pub const SESSION_COOKIE: &str = "netledger_session";
@@ -48,7 +48,7 @@ pub enum Role {
 }
 
 impl Role {
-    fn from_db(value: &str) -> Self {
+    pub(crate) fn from_db(value: &str) -> Self {
         match value {
             "viewer" => Role::Viewer,
             "editor" => Role::Editor,
@@ -75,7 +75,28 @@ pub struct CurrentUser {
     pub username: String,
     pub role: Role,
     #[serde(skip)]
-    pub session_id: Uuid,
+    pub credential: Credential,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Credential {
+    Session(Uuid),
+    Token(Uuid),
+}
+
+impl Credential {
+    pub fn id(self) -> Uuid {
+        match self {
+            Credential::Session(id) | Credential::Token(id) => id,
+        }
+    }
+
+    pub fn session_id(self) -> Result<Uuid, AppError> {
+        match self {
+            Credential::Session(id) => Ok(id),
+            Credential::Token(_) => Err(AppError::SessionRequired),
+        }
+    }
 }
 
 impl FromRequestParts<AppState> for CurrentUser {
@@ -85,6 +106,12 @@ impl FromRequestParts<AppState> for CurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(bearer) = bearer_token(&parts.headers) {
+            return tokens::resolve_token(&state.db, bearer)
+                .await?
+                .ok_or(AppError::Unauthorized);
+        }
+
         let jar = CookieJar::from_headers(&parts.headers);
         let token = jar
             .get(SESSION_COOKIE)
@@ -95,6 +122,16 @@ impl FromRequestParts<AppState> for CurrentUser {
             .await?
             .ok_or(AppError::Unauthorized)
     }
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
 }
 
 pub struct Editor(pub CurrentUser);
@@ -292,7 +329,7 @@ async fn sign_in(
         account_id: account.id,
         username: account.username,
         role: Role::from_db(&account.role),
-        session_id,
+        credential: Credential::Session(session_id),
     };
     let jar = jar.add(session_cookie(&token, state.cookie_secure));
 
@@ -309,9 +346,10 @@ async fn sign_out(
     user: CurrentUser,
     jar: CookieJar,
 ) -> Result<(StatusCode, CookieJar), AppError> {
+    let session_id = user.credential.session_id()?;
     let mut tx = state.db.begin().await?;
 
-    sqlx::query!("DELETE FROM session WHERE id = $1", user.session_id)
+    sqlx::query!("DELETE FROM session WHERE id = $1", session_id)
         .execute(&mut *tx)
         .await?;
 
@@ -323,7 +361,7 @@ async fn sign_out(
         "#,
         user.account_id,
         user.username,
-        user.session_id,
+        session_id,
         source.map(IpNet::from)
     )
     .execute(&mut *tx)
@@ -376,7 +414,7 @@ async fn resolve_session(db: &PgPool, token: &str) -> Result<Option<CurrentUser>
         account_id: row.account_id,
         username: row.username,
         role: Role::from_db(&row.role),
-        session_id: row.session_id,
+        credential: Credential::Session(row.session_id),
     }))
 }
 
@@ -542,7 +580,7 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(body["username"], "gary");
         assert_eq!(body["role"], "administrator");
-        assert!(body.get("session_id").is_none());
+        assert!(body.get("credential").is_none());
         let cookie = cookie.unwrap();
         assert!(cookie.starts_with("netledger_session="));
         assert!(cookie.contains("HttpOnly"));

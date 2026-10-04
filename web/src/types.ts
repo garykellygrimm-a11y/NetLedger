@@ -58,3 +58,20 @@ export type SignInInput = {
     username: string
     password: string
 }
+
+export type ApiToken = {
+  id: string
+  name: string
+  hint: string
+  created_at: string
+  expires_at: string | null
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+export type CreatedApiToken = ApiToken & { secret: string }
+
+export type CreateApiTokenInput = {
+  name: string
+  expires_in_days?: number
+}

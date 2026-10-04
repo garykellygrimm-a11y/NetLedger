@@ -20,6 +20,7 @@ pbkdf2.workspace = true
 rpassword.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
@@ -31,5 +32,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-serde_json.workspace = true
 tower.workspace = true

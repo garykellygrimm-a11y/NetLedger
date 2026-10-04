@@ -9,9 +9,10 @@ use uuid::Uuid;
 use crate::{
     AppState,
     addresses::is_reserved_in,
+    audit,
     error::AppError,
     extractors::{AppJson, AppPath},
-    sessions::{CurrentUser, Editor},
+    sessions::{ClientAddr, CurrentUser, Editor},
 };
 
 const DEADLOCK_DETECTED: &str = "40P01";
@@ -191,7 +192,8 @@ async fn get_subnet(
 
 async fn create_subnet(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppJson(input): AppJson<CreateSubnet>,
 ) -> Result<(StatusCode, Json<Subnet>), AppError> {
     input.validate()?;
@@ -289,6 +291,17 @@ async fn create_subnet(
         .await?;
     }
 
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "subnet.create",
+        "subnet",
+        subnet.id,
+        serde_json::json!({ "cidr": subnet.cidr, "name": subnet.name, "parent_id": subnet.parent_id }),
+    )
+    .await?;
+
     tx.commit().await.map_err(map_create_error)?;
 
     Ok((StatusCode::CREATED, Json(subnet)))
@@ -296,7 +309,8 @@ async fn create_subnet(
 
 async fn update_subnet(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppPath(id): AppPath<Uuid>,
     AppJson(input): AppJson<UpdateSubnet>,
 ) -> Result<Json<Subnet>, AppError> {
@@ -306,6 +320,18 @@ async fn update_subnet(
     let description = input.description.flatten();
     let set_vlan_id = input.vlan_id.is_some();
     let vlan_id = input.vlan_id.flatten();
+    let mut changes = serde_json::Map::new();
+    if let Some(name) = &name {
+        changes.insert("name".into(), serde_json::json!(name));
+    }
+    if let Some(description) = &description {
+        changes.insert("description".into(), serde_json::json!(description));
+    }
+    if set_vlan_id {
+        changes.insert("vlan_id".into(), serde_json::json!(vlan_id));
+    }
+
+    let mut tx = state.db.begin().await?;
 
     let subnet = sqlx::query_as!(
         Subnet,
@@ -324,16 +350,30 @@ async fn update_subnet(
         set_vlan_id,
         vlan_id,
     )
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "subnet.update",
+        "subnet",
+        subnet.id,
+        serde_json::json!({ "cidr": subnet.cidr, "changes": changes }),
+    )
+    .await?;
+
+    tx.commit().await?;
 
     Ok(Json(subnet))
 }
 
 async fn delete_subnet(
     State(state): State<AppState>,
-    Editor(_user): Editor,
+    ClientAddr(source): ClientAddr,
+    Editor(user): Editor,
     AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let mut tx = state.db.begin().await?;
@@ -410,9 +450,23 @@ async fn delete_subnet(
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query!("DELETE FROM subnet WHERE id = $1", id)
-        .execute(&mut *tx)
-        .await?;
+    let cidr = sqlx::query_scalar!(
+        r#"DELETE FROM subnet WHERE id = $1 RETURNING cidr AS "cidr: IpNet""#,
+        id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    audit::record(
+        &mut tx,
+        &user,
+        source,
+        "subnet.delete",
+        "subnet",
+        id,
+        serde_json::json!({ "cidr": cidr, "parent_id": parent_id }),
+    )
+    .await?;
 
     tx.commit().await?;
 
@@ -522,6 +576,81 @@ mod tests {
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
             assert_eq!(body["error"], "authentication required", "{method} {uri}");
         }
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn every_change_is_audited_with_its_actor(pool: PgPool) {
+        let app = crate::test_support::app_as(pool.clone(), Role::Editor).await;
+        let (_, subnet) = create(&app, json!({ "cidr": "10.0.0.0/24", "name": "Office" })).await;
+        let subnet_id = subnet["id"].as_str().unwrap().to_string();
+        let uri = format!("/api/subnets/{subnet_id}");
+
+        send(&app, "PATCH", &uri, Some(json!({ "name": "Renamed" }))).await;
+        let (_, recorded) = send(
+            &app,
+            "POST",
+            "/api/addresses",
+            Some(json!({ "address": "10.0.0.5" })),
+        )
+        .await;
+        let (_, allocated) = send(
+            &app,
+            "POST",
+            &format!("{uri}/addresses/allocate"),
+            Some(json!({})),
+        )
+        .await;
+        for address in [&recorded, &allocated] {
+            let address_uri = format!("/api/addresses/{}", address["id"].as_str().unwrap());
+            assert_eq!(
+                send(&app, "DELETE", &address_uri, None).await.0,
+                StatusCode::NO_CONTENT
+            );
+        }
+        assert_eq!(
+            send(
+                &app,
+                "DELETE",
+                &format!("/api/addresses/{}", Uuid::nil()),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(&app, "DELETE", &uri, None).await.0,
+            StatusCode::NO_CONTENT
+        );
+
+        let entries = sqlx::query!(
+            r#"
+            SELECT action, actor_username, target_id, credential_id IS NOT NULL AS "has_credential!"
+            FROM audit_log
+            WHERE actor_username = 'test-editor'
+            ORDER BY id
+            "#
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let actions: Vec<&str> = entries.iter().map(|e| e.action.as_str()).collect();
+        assert_eq!(
+            actions,
+            [
+                "subnet.create",
+                "subnet.update",
+                "address.create",
+                "address.allocate",
+                "address.delete",
+                "address.delete",
+                "subnet.delete",
+            ]
+        );
+        assert!(entries.iter().all(|e| e.has_credential));
+        assert_eq!(entries[0].target_id.unwrap().to_string(), subnet_id);
+        assert_eq!(entries[6].target_id.unwrap().to_string(), subnet_id);
     }
 
     #[sqlx::test(migrator = "crate::MIGRATOR")]
